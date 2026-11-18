@@ -65,8 +65,9 @@ limiter look-ahead), supports stereo, mono-to-stereo and mono layouts, and any s
 
 The **Garden** page has the six macros, Key / Scale, Freeze and the living plant. The **Soil**
 page has every module parameter. The preset browser is in the header; the status line at the
-bottom explains whatever control is under the mouse. Double-click a knob to reset it, hold Shift
-for fine adjustment, use the mouse wheel for small steps.
+bottom explains whatever control is under the mouse. Double-click a knob to reset it, double-click
+its value to type one ("3.2k", "-7", "inf"), hold Shift for fine adjustment, use the mouse
+wheel for small steps. The window resizes from the corner (75 % to 170 %).
 
 ### Macros
 
@@ -157,7 +158,7 @@ A 16-line modulated feedback delay network.
 |---|---|---|
 | Reverb (on/off), Reverb Mix | 0–100 % | |
 | Size | 0–100 % | Small room to enormous. Moving it glides the pitch of the tail. |
-| Decay | 0.3–60 s, then **Infinite** | Fully clockwise never decays. |
+| Decay | 0.3–60 s, then **Infinite** | Fully clockwise never decays (with Shimmer at 0; with shimmer the tail slowly climbs out of hearing). |
 | Pre-delay | 0–250 ms | |
 | Damping | 0.5–20 kHz | High-frequency damping inside the tail. |
 | Low Cut | 20–1000 Hz | Low cut on the reverb plus bass absorption in the tail. |
@@ -174,10 +175,11 @@ A 16-line modulated feedback delay network.
 | Width | 0–200 % | Stereo width of the wet signal; extra width only applies above 180 Hz. |
 | Clearing | 0–100 % | Ducks the ambience while you play so it blooms in the gaps. The reverb still hears everything. |
 | Output | −24…+12 dB | Wet level before the limiter. |
-| Bypass | on/off | Click-free, latency-compensated; tails ring out. |
+| Bypass | on/off | Click-free, latency-compensated true bypass; tails ring out. |
 
-A look-ahead limiter (2 ms, −0.3 dBFS ceiling) is always last in the chain: nothing leaves the
-plugin above the ceiling, whatever the settings or the input.
+A look-ahead limiter (2 ms, −0.3 dBFS ceiling) is always last in the chain: while the plugin is
+active nothing leaves it above the ceiling, whatever the settings or the input. (Bypass passes
+the input through untouched, including anything hotter than that.)
 
 ## Factory presets
 
@@ -199,12 +201,14 @@ QUICK=1 ./scripts/test.sh         # shorter render matrix
 PLUGINVAL=/path/to/pluginval ./scripts/test.sh
 ```
 
-- **Unit tests** (`build/tests/verdant_tests`, also `ctest --test-dir build`): 31 tests covering
+- **Unit tests** (`build/tests/verdant_tests`, also `ctest --test-dir build`): 41 tests covering
   filters, saturation, limiter proof, tape transparency and transposition, grain loudness
   normalisation, pitch tracker accuracy, arp scale/key correctness, chorus reconstruction and
   click-freeness, reverb decay accuracy / infinite / freeze / run-away, and engine-level latency,
   bypass, block-size invariance, dry/wet time alignment, ducking, reset determinism,
-  silence-in/silence-out, NaN recovery and click-free switching.
+  silence-in/silence-out, NaN recovery and click-free switching, plus regression tests for
+  every defect found by an independent code review (long-run varispeed, decay jumps, stale
+  reverb input, saturated grain pool, slow tempo, reset exactness).
 - **Render suite** (`build/tests/verdant_render --suite --out DIR`): 320 offline renders — every
   preset × impulse / sine sweep / noise burst / synth phrase / plucked string / sung vowel, each
   module solo, silence, hostile input (+12 dBFS squares, DC), 44.1–192 kHz, block sizes 1–4096,
