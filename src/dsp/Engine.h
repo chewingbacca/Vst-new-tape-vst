@@ -1,11 +1,18 @@
 // Verdant — the complete signal chain. JUCE-free; used by the plugin, the offline
 // renderer and the unit tests.
+//
+//   in ─┬─────────────────────────────── dry (delayed by tape.nominalDelay) ──────────┐
+//       └─ Tape ─┬───────────────┬─► bus ─► Chorus ─┬─────────────► wet ─► tone/width ─┴─► mix ─► limiter ─► out
+//                ├─► Grain cloud ┘                  └─► Reverb ───┘
+//                └─► Arp ──(direct)──► bus, ──(wash)──► reverb input
 #pragma once
 
 #include <atomic>
 
+#include "Modulation.h"
 #include "Output.h"
 #include "Params.h"
+#include "Tape.h"
 #include "Util.h"
 
 namespace verdant
@@ -37,7 +44,7 @@ public:
     void prepare (double sampleRate, int maxBlockSize);
     void reset();
 
-    int  latencySamples() const { return limiter.latency(); }
+    int  latencySamples() const { return tape.nominalDelay() + limiter.latency(); }
 
     // Target parameter values (plain units). Call before process(); cheap.
     void setParams (const ParamValues& p) { target = p; }
@@ -48,7 +55,7 @@ public:
     Meters meters;
 
 private:
-    void controlTick (const Transport& transport);
+    void controlTick();
     void processChunk (float* l, float* r, int n);
 
     float sr = 48000.0f, tickRate = 1500.0f;
@@ -57,15 +64,31 @@ private:
 
     ParamValues target;
 
-    // smoothed controls
-    Smooth sMix, sBypass, sOutGain;
-    Ramp rDry, rWet, rBypass;
+    // ---- beat clock
+    double beat = 0.0, beatInc = 0.0, samplesPerBeat = 24000.0;
 
+    // ---- modulation
+    DriftLfo drift[4];
+    Follower follower;
+    float driftVal[4] = { 0, 0, 0, 0 };
+
+    // ---- smoothed macro / global controls
+    Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
+    Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck;
+
+    // ---- modules
+    Tape tape;
+    OutputTone tone;
     Limiter limiter;
-    std::vector<float> bypassDelayL, bypassDelayR;
-    int bypassPos = 0;
 
-    float meterIn = 0.0f, meterOutL = 0.0f, meterOutR = 0.0f;
+    // ---- delays for the dry and bypass paths
+    Ring dryDelay[2], bypassDelay[2];
+
+    // ---- metering
+    float meterIn = 0.0f, meterOutL = 0.0f, meterOutR = 0.0f, meterWet = 0.0f;
+    OnePoleLP bandLo, bandHi;
+    float eLow = 0.0f, eMid = 0.0f, eHigh = 0.0f;
+    float duckEnv = 0.0f, duckAtk = 0.0f, duckRel = 0.0f;
 };
 
 } // namespace verdant

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -205,6 +206,7 @@ public:
     void addAt (int pos, float x) { buf[size_t (pos & mask)] += x; }
     void setAt (int pos, float x) { buf[size_t (pos & mask)] = x; }
     float at (int pos) const { return buf[size_t (pos & mask)]; }
+    float atAbs (int64_t pos) const { return buf[size_t (pos & int64_t (mask))]; }
 
     // Delay measured in samples behind the most recently written sample (0 = newest).
     float tap (int delay) const { return buf[size_t ((w - 1 - delay) & mask)]; }
@@ -258,30 +260,36 @@ inline float softClip (float x)
     return x - (4.0f / 27.0f) * x * x * x;
 }
 
-// tanh with first-order antiderivative anti-aliasing (Parker/Zavalishin/Le Bivic 2016).
+// tanh with first-order antiderivative anti-aliasing (Parker, Zavalishin & Le Bivic, DAFx-16).
+// ADAA is applied to the non-linear residual tanh(x) - x only; the linear part passes
+// untouched, so the half-sample averaging inherent to ADAA does not dull the top end.
 struct AdaaTanh
 {
     double x1 = 0.0, F1 = 0.0;
 
+    // antiderivative of tanh(x) - x  =  log(cosh(x)) - x^2/2
     static double F (double x)
     {
-        // log(cosh(x)), numerically safe for large |x|
         const double ax = std::abs (x);
-        return ax + std::log1p (std::exp (-2.0 * ax)) - 0.6931471805599453;
+        return ax + std::log1p (std::exp (-2.0 * ax)) - 0.6931471805599453 - 0.5 * x * x;
     }
     void reset() { x1 = 0.0; F1 = F (0.0); }
+    void prime (double x) { x1 = x; F1 = F (x); }
     float process (float xin)
     {
         const double x = double (xin);
         const double Fx = F (x);
         const double d = x - x1;
-        double y;
-        if (std::abs (d) < 1.0e-5)
-            y = std::tanh (0.5 * (x + x1));
+        double resid;
+        if (std::abs (d) < 1.0e-4)
+        {
+            const double m = 0.5 * (x + x1);
+            resid = std::tanh (m) - m;
+        }
         else
-            y = (Fx - F1) / d;
+            resid = (Fx - F1) / d;
         x1 = x; F1 = Fx;
-        return float (y);
+        return float (x + resid);
     }
 };
 

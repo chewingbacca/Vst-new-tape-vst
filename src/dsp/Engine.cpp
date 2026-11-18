@@ -8,89 +8,191 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sr = float (sampleRate);
     tickRate = sr / float (kChunk);
 
+    tape.prepare (sr);
+    tone.prepare (sr);
     limiter.prepare (sr);
-    const int lat = std::max (1, limiter.latency());
-    bypassDelayL.assign (size_t (lat), 0.0f);
-    bypassDelayR.assign (size_t (lat), 0.0f);
 
+    for (auto& d : dryDelay)    d.prepare (tape.nominalDelay() + 8);
+    for (auto& d : bypassDelay) d.prepare (latencySamples() + 8);
+
+    static constexpr float driftHz[4] = { 0.071f, 0.113f, 0.047f, 0.163f };
+    for (int i = 0; i < 4; ++i)
+        drift[i].prepare (tickRate, 0xC0FFEEu + uint32_t (i) * 7919u, driftHz[i]);
+    follower.prepare (sr);
+
+    for (auto* s : { &sBloom, &sGrowth, &sMoisture, &sSunlight, &sRoots })
+        s->setTime (0.06f, tickRate);
     sMix.setTime (0.03f, tickRate);
     sBypass.setTime (0.02f, tickRate);
     sOutGain.setTime (0.03f, tickRate);
+    sWidth.setTime (0.05f, tickRate);
+    sDuck.setTime (0.05f, tickRate);
+
+    bandLo.setCutoff (250.0f, sr);
+    bandHi.setCutoff (2500.0f, sr);
+    duckAtk = 1.0f - std::exp (-1.0f / (0.012f * sr));
+    duckRel = 1.0f - std::exp (-1.0f / (0.45f * sr));
 
     reset();
 }
 
 void Engine::reset()
 {
+    tape.reset();
+    tone.reset();
     limiter.reset();
-    std::fill (bypassDelayL.begin(), bypassDelayL.end(), 0.0f);
-    std::fill (bypassDelayR.begin(), bypassDelayR.end(), 0.0f);
-    bypassPos = 0;
+    for (auto& d : dryDelay) d.clear();
+    for (auto& d : bypassDelay) d.clear();
+    for (auto& d : drift) d.reset();
+    follower.reset();
+    bandLo.reset(); bandHi.reset();
     chunkPos = 0;
     firstBlock = true;
-    meterIn = meterOutL = meterOutR = 0.0f;
+    meterIn = meterOutL = meterOutR = meterWet = 0.0f;
+    eLow = eMid = eHigh = 0.0f;
+    duckEnv = 0.0f;
 }
 
-void Engine::controlTick (const Transport&)
+void Engine::controlTick()
 {
-    sMix.set (target[pMix]);
-    sBypass.set (target[pBypass] >= 0.5f ? 1.0f : 0.0f);
-    sOutGain.set (dbToGain (target[pOutGain]));
+    const ParamValues& p = target;
+
+    sBloom.set (p[pBloom]);       sGrowth.set (p[pGrowth]);   sMoisture.set (p[pMoisture]);
+    sSunlight.set (p[pSunlight]); sRoots.set (p[pRoots]);
+    sMix.set (p[pMix]);
+    sBypass.set (p[pBypass] >= 0.5f ? 1.0f : 0.0f);
+    sOutGain.set (dbToGain (p[pOutGain]));
+    sWidth.set (p[pOutWidth]);
+    sDuck.set (p[pOutDuck]);
 
     if (firstBlock)
+        for (auto* s : { &sBloom, &sGrowth, &sMoisture, &sSunlight, &sRoots, &sMix, &sBypass, &sOutGain, &sWidth, &sDuck })
+            s->snap (s->target);
+
+    const float bloom = sBloom.tick(), growth = sGrowth.tick(), moisture = sMoisture.tick();
+    const float sunlight = sSunlight.tick(), roots = sRoots.tick();
+    const float mix = sMix.tick(), byp = sBypass.tick(), outGain = sOutGain.tick();
+    const float width = sWidth.tick(), duck = sDuck.tick();
+    (void) moisture;
+
+    // ---- modulation sources
+    const float growthRate = macroScale (growth, 0.2f, 5.0f);
+    const float driftDepth = p[pDrift] * macroScale (bloom, 0.5f, 1.5f);
+    for (int i = 0; i < 4; ++i)
     {
-        sMix.snap (sMix.target);
-        sBypass.snap (sBypass.target);
-        sOutGain.snap (sOutGain.target);
+        driftVal[i] = drift[i].tick (growthRate) * driftDepth;
+        meters.drift[i].store (drift[i].get(), std::memory_order_relaxed);
+    }
+    const float bloomChar = macroScale (bloom, 0.35f, 1.5f);
+
+    // ---- tape
+    {
+        Tape::Controls c;
+        c.on = p[pTapeOn] >= 0.5f;
+        c.mix = p[pTapeMix];
+        c.speedSemis = p[pTapeSpeed];
+        c.stretch = p[pTapeStretch];
+        c.wow = clampf (p[pTapeWow] * bloomChar * (1.0f + 0.35f * driftVal[0]), 0.0f, 1.0f);
+        c.flutter = clampf (p[pTapeFlutter] * bloomChar, 0.0f, 1.0f);
+        c.drive = clampf (p[pTapeDrive] * macroScale (bloom, 0.6f, 1.3f) + 0.15f * macroBipolar (roots), 0.0f, 1.0f);
+        c.age = clampf (p[pTapeAge] - 0.35f * macroBipolar (sunlight), 0.0f, 1.0f);
+        c.bodyDb = 2.0f * macroBipolar (roots);
+        c.stutter = clampf (p[pTapeStutter] * macroScale (bloom, 0.5f, 1.4f), 0.0f, 1.0f);
+        c.stutterLen = int (p[pTapeStutterLen] + 0.5f);
+        c.motion = macroScale (growth, 0.5f, 2.2f);
+        c.drift = driftVal[0];
+        c.beat = beat;
+        c.samplesPerBeat = samplesPerBeat;
+        tape.control (c);
     }
 
-    const float mix = sMix.tick();
-    const float byp = sBypass.tick();
-    sOutGain.tick();
+    // ---- output tone
+    {
+        const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
+        const float rootsDb = 6.0f * macroBipolar (roots);
+        tone.setTone (tiltDb, rootsDb);
+    }
 
     const float dry = std::cos (mix * 0.5f * kPi);
-    const float wet = std::sin (mix * 0.5f * kPi);
+    const float wet = std::sin (mix * 0.5f * kPi) * outGain;
 
     if (firstBlock)
     {
-        rDry.snap (dry); rWet.snap (wet); rBypass.snap (byp);
+        rDry.snap (dry); rWet.snap (wet); rBypass.snap (byp); rInGate.snap (1.0f - byp);
+        rWidth.snap (width); rDuck.snap (duck);
         firstBlock = false;
     }
     rDry.begin (dry, kChunk);
     rWet.begin (wet, kChunk);
     rBypass.begin (byp, kChunk);
+    rInGate.begin (1.0f - byp, kChunk);
+    rWidth.begin (width, kChunk);
+    rDuck.begin (duck, kChunk);
+
+    meters.envelope.store (follower.shaped(), std::memory_order_relaxed);
+    meters.stutterPulse.store (tape.stutterEvents, std::memory_order_relaxed);
 }
 
 void Engine::processChunk (float* l, float* r, int n)
 {
-    const int lat = int (bypassDelayL.size());
+    float inL[kChunk] = {}, inR[kChunk] = {}, tL[kChunk], tR[kChunk], duckG[kChunk];
+
+    // ---- input: followers, bypass gate
+    for (int i = 0; i < n; ++i)
+    {
+        const float g = rInGate.next();
+        inL[i] = l[i] * g;
+        inR[i] = r[i] * g;
+        follower.process (inL[i], inR[i]);
+        meterIn = std::max (meterIn * 0.9995f, std::max (std::abs (l[i]), std::abs (r[i])));
+
+        const float e = follower.env;
+        duckEnv += (e > duckEnv ? duckAtk : duckRel) * (e - duckEnv);
+        const float amount = clampf (duckEnv * 3.0f, 0.0f, 1.0f);
+        duckG[i] = 1.0f - 0.8f * rDuck.next() * amount;
+    }
+
+    // ---- tape
+    tape.process (inL, inR, tL, tR, n);
+
+    // ---- output
+    const int dryLag = tape.nominalDelay();
+    const int bypLag = latencySamples();
 
     for (int i = 0; i < n; ++i)
     {
-        const float inL = l[i], inR = r[i];
-        meterIn = std::max (meterIn * 0.9995f, std::max (std::abs (inL), std::abs (inR)));
+        float wetL = tL[i], wetR = tR[i];
+        (void) duckG;
 
-        // (modules go here) -----------------------------------------------
-        float wetL = inL, wetR = inR;
+        tone.process (wetL, wetR, rWidth.next());
+        meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));
+
+        dryDelay[0].push (l[i]);
+        dryDelay[1].push (r[i]);
+        bypassDelay[0].push (l[i]);
+        bypassDelay[1].push (r[i]);
 
         const float dg = rDry.next(), wg = rWet.next(), bp = rBypass.next();
-        float outL = inL * dg + wetL * wg;
-        float outR = inR * dg + wetR * wg;
+        float outL = dryDelay[0].tap (dryLag) * dg + wetL * wg;
+        float outR = dryDelay[1].tap (dryLag) * dg + wetR * wg;
 
         limiter.process (outL, outR);
 
         // latency-matched clean path for click-free bypass
-        const float cleanL = bypassDelayL[size_t (bypassPos)];
-        const float cleanR = bypassDelayR[size_t (bypassPos)];
-        bypassDelayL[size_t (bypassPos)] = inL;
-        bypassDelayR[size_t (bypassPos)] = inR;
-        bypassPos = (bypassPos + 1) % lat;
+        outL += (bypassDelay[0].tap (bypLag) - outL) * bp;
+        outR += (bypassDelay[1].tap (bypLag) - outR) * bp;
 
-        outL += (cleanL - outL) * bp;
-        outR += (cleanR - outR) * bp;
-
+        // metering
         meterOutL = std::max (meterOutL * 0.9995f, std::abs (outL));
         meterOutR = std::max (meterOutR * 0.9995f, std::abs (outR));
+        const float m = 0.5f * (outL + outR);
+        const float lo = bandLo.process (m);
+        const float hiLp = bandHi.process (m);
+        const float hi = m - hiLp, md = hiLp - lo;
+        eLow  += 0.002f * (lo * lo - eLow);
+        eMid  += 0.002f * (md * md - eMid);
+        eHigh += 0.002f * (hi * hi - eHigh);
+
         l[i] = outL;
         r[i] = outR;
     }
@@ -98,15 +200,21 @@ void Engine::processChunk (float* l, float* r, int n)
 
 void Engine::process (float* left, float* right, int n, const Transport& transport)
 {
+    samplesPerBeat = 60.0 * double (sr) / std::max (20.0, transport.bpm);
+    beatInc = 1.0 / samplesPerBeat;
+    if (transport.playing)
+        beat = transport.ppq;
+
     int done = 0;
     while (done < n)
     {
         if (chunkPos == 0)
-            controlTick (transport);
+            controlTick();
 
         const int m = std::min (n - done, kChunk - chunkPos);
         processChunk (left + done, right + done, m);
         done += m;
+        beat += double (m) * beatInc;
         chunkPos = (chunkPos + m) % kChunk;
     }
 
@@ -121,9 +229,14 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
         std::fill (right, right + n, 0.0f);
     }
 
+    auto energy = [] (float e) { return clampf (std::sqrt (std::max (0.0f, e)) * 4.0f, 0.0f, 1.0f); };
     meters.inLevel.store (meterIn, std::memory_order_relaxed);
     meters.outLevelL.store (meterOutL, std::memory_order_relaxed);
     meters.outLevelR.store (meterOutR, std::memory_order_relaxed);
+    meters.wetLevel.store (meterWet, std::memory_order_relaxed);
+    meters.low.store (energy (eLow), std::memory_order_relaxed);
+    meters.mid.store (energy (eMid), std::memory_order_relaxed);
+    meters.high.store (energy (eHigh), std::memory_order_relaxed);
     meters.limiterGain.store (limiter.gainReduction(), std::memory_order_relaxed);
 }
 
