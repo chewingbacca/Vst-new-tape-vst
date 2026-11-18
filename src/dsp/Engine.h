@@ -50,6 +50,14 @@ public:
 
     int  latencySamples() const { return tape.nominalDelay() + limiter.latency(); }
 
+    // Latency the engine will report once prepared at this rate (lets the plugin announce a
+    // sensible value before the host has told it the real sample rate).
+    static int latencyForSampleRate (double sampleRate)
+    {
+        const float fs = float (sampleRate);
+        return 4 + int (std::lround (0.003f * fs)) + std::max (8, int (std::lround (0.002f * fs))) - 1;
+    }
+
     // Target parameter values (plain units). Call before process(); cheap.
     void setParams (const ParamValues& p) { target = p; }
 

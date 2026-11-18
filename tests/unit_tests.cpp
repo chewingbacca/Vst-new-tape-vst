@@ -136,6 +136,7 @@ TEST (engine_reports_latency_and_mix_zero_is_a_pure_delay)
         e.process (s.l.data(), s.r.data(), int (s.size()), tr);
         const int lat = e.latencySamples();
         CHECK (lat > 0);
+        CHECK (lat == Engine::latencyForSampleRate (sr));
         double err = 0.0;
         for (size_t i = size_t (lat); i < s.size(); ++i)
             err = std::max (err, double (std::abs (s.l[i] - ref.l[i - size_t (lat)])));
