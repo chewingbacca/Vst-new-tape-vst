@@ -18,8 +18,8 @@ Living document so work survives a context reset. Status first, then design deci
 - [x] Reverb (16-line FDN, in-loop shimmer, freeze, infinite, energy governor).
 - [x] Output (tilt, roots shelf, width, ducking, look-ahead limiter).
 - [x] Macros, 28 factory presets.
-- [x] Offline render harness + verification suite (320 renders), 41 unit tests.
-- [x] Independent code review of `src/dsp`; all 11 findings fixed with regression tests (see below).
+- [x] Offline render harness + verification suite (320 renders), 50 unit tests.
+- [x] Two independent code reviews of `src/dsp`; all 21 findings fixed with regression tests (see below).
 - [x] Custom UI incl. typed value entry and HiDPI check (see "UI" below).
 - [x] README.
 
@@ -49,7 +49,9 @@ Living document so work survives a context reset. Status first, then design deci
 - **Control grid.** Fixed internal grid of 32 samples (`Engine::kChunk`), independent of the host
   block size, so output is identical for any buffer size (unit test `engine_is_block_size_invariant`).
   Smoothed values tick once per chunk; gains and delay times are linearly ramped per sample.
-  Step/beat boundaries add 1e-7 beats before `floor()` so float noise cannot move an event by a chunk.
+  Step/beat boundaries add 1e-7 beats before `floor()` so float noise cannot move an event by a chunk;
+  the arp fires on `ceil(samplesTo - 1e-3)`; the free-running clock is `base + sampleCount * inc`
+  (integer counter), so the beat at a given sample is the same however the host slices blocks.
 - **Signal flow.**
   `in -> Tape -> [+ Grain cloud + Arp direct] -> Chorus -> (+ Arp wash) Reverb -> tone/width -> mix -> limiter`.
   The dry path is delayed by `tape.nominalDelay()` (4 samples + 3 ms) so the wet path's direct
@@ -63,8 +65,9 @@ Living document so work survives a context reset. Status first, then design deci
   It is the last processing stage (after dry/wet), so nothing above -0.3 dBFS leaves the plugin
   while it is active. Bypass is a true bypass: the latency-matched clean signal is crossfaded in
   *after* the limiter, so a bypassed plugin passes hot input untouched.
-- **NaN guard.** `Engine::process` scans its output; on a non-finite sample it resets all state and
-  outputs silence for that block.
+- **NaN guard.** Non-finite input samples are replaced by silence before they reach any state
+  (cheap, and the tails keep ringing). As a last resort `Engine::process` also scans its output;
+  on a non-finite sample it resets all state and outputs silence for that block.
 - **Denormals.** `ScopedNoDenormals` (FTZ/DAZ on x86, FZ on arm64) inside `Engine::process`.
 - **Bypass** crossfades (20 ms) to a latency-matched clean path and gates the engine input, so
   tails ring out instead of being cut or frozen.
@@ -82,10 +85,13 @@ Living document so work survives a context reset. Status first, then design deci
   is no fade-in. (The whole module is then a delay plus the Drive-0 curve `2 tanh(x/2)`, the
   21 kHz tone filter and the 8 Hz DC blocker.)
 - Varispeed: grains resample at the speed ratio; a new grain starts up to 12 ms further back at
-  the offset that best correlates with what the previous grain is about to play (WSOLA). A pure
-  tone stays a pure tone (within 1 cent) instead of a comb-filtered cluster. Non-neutral grains
-  carry 12 ms of extra lag so the comparison windows are always behind the write head; the
-  search runs on a ~16 kHz grid and is refined at full resolution.
+  the offset that best correlates with what the previous grain has just played (WSOLA). A pure
+  tone stays a pure tone (within 1 cent) instead of a comb-filtered cluster. Both comparison
+  windows END at the grains' read positions, so only written audio is compared; the search runs
+  on a ~16 kHz grid and is refined at full resolution. The first non-neutral grain is aligned to
+  the neutral one, and back at neutral the leftover offset is walked down (at most 3/4 per grain,
+  phase-aligned) to zero, so moving Speed/Stretch through neutral does not dip the level.
+- Drive coefficients are ramped per sample (no zipper noise).
 - Speeding up band-limits what is recorded (4th-order Butterworth at 0.42 fs / ratio): no aliasing.
 - Stretch: the read head falls behind at rate 1 - 1/stretch and snaps back to "now" every bar
   (4 beats), like Tape Fiasco's tempo-synced capture.
@@ -101,8 +107,10 @@ Living document so work survives a context reset. Status first, then design deci
   repeated 2-8 times (3 ms edge fades, optional per-repeat pitch ramp / decay).
 
 ### Grain cloud (`GrainCloud.h`)
-- Mono capture (8 s), up to 64 grains, each a panned point source. Loudness is normalised by the
+- Mono capture (9 s), up to 64 grains, each a panned point source. Loudness is normalised by the
   expected overlap (density x size), so 1 grain/s and 80 grains/s sit in the same window (test).
+  The normalisation is baked into each grain when it is born, so dropping density or size never
+  boosts grains that are already sounding; a density change rescales the pending spawn interval.
 - Harmonics: octaves and fifths only (key-agnostic, always consonant); Sunlight biases up,
   Roots biases down. Regrow feeds the cloud (band-limited, soft-clipped, gain <= 0.72) back into
   the capture buffer.
@@ -113,13 +121,18 @@ Living document so work survives a context reset. Status first, then design deci
 - Grains transposed up read band-limited copies of the capture (0.20 fs up to x2.2, 0.11 fs above).
 
 ### Arp (`Arp.h`, `PitchTracker.h`)
-- Records the input only while it sounds (gate with hysteresis), so the buffer always holds the
-  last sound. Notes are read from the region that ends where the sound was last "strong"
-  (>= half its recent peak): a decaying pluck is replayed from its body, not its tail.
+- Records the input only while it sounds AND is within ~20 dB of its recent peak ("body"), so the
+  quiet tail of a ringing note cannot push its body out of the 6.5 s ring. An onset detector
+  (level > 2x its 60 ms average) re-references the peak, so a softer new note is picked up at once.
+  Notes are read from the region that ends where the sound was last "strong" (>= half the peak):
+  a decaying note is replayed from its body, not its tail. If the slice does not fit in front of
+  the anchor the note is shortened; only when the anchor is about to be overwritten does a coarse
+  loudness history (one value per 20 ms) pick the latest spot within 6 dB of the loudest material
+  still in the ring.
 - Notes are resampled slices. Three capture bands (full, 0.20 fs, 0.11 fs; 4th order) keep every
   ratio alias-free; the octave-up Sparkle is skipped above x4. Patterns derive from the beat
-  position (deterministic in the host timeline). If quieter material has been sounding for 3 s
-  the anchor re-references to it, so the arp cannot go silent after a loud passage.
+  position (deterministic in the host timeline). Voices are rendered in segments up to each
+  trigger, so slot reuse (and therefore output) does not depend on block size.
 - 6- and 7-note scales are walked in thirds (arpeggio, not a scale run). Bloom = ascending chord
   with long overlapping notes, widening pan, then a two-step breath.
 - Pitch Track off (default): Scale = intervals above whatever is played (default "Fifths" is
@@ -133,8 +146,10 @@ Living document so work survives a context reset. Status first, then design deci
 - Voice parameters are fixed per voice index (golden-ratio spreads), so changing the voice
   count fades voices in/out without moving the others. Level is normalised by sum of gains^2.
 - Depth is defined in cents (max 21) and converted to delay excursion per voice rate.
-- Glassy: 1.5-7.5 ms taps, 40 % of the depth, feedback of the *mean* tap (loop gain <= 0.5 for any
-  phase relationship), high-passed and high-shelved wet.
+- Glassy: 1.5-7.5 ms taps, 40 % of the depth, feedback of the gain-weighted *mean* tap (loop gain
+  <= 0.5 for any phase relationship, and no step when the voice count changes), high-passed and
+  high-shelved wet. In glassy mode the module keeps running while switched off (the feedback path
+  has memory); in smooth mode it idles.
 
 ### Reverb (`Reverb.h`)
 - 16 delay lines 41-307 ms x size scale (0.22 .. 1.72), each followed by an allpass (9-37 ms),
@@ -142,7 +157,8 @@ Living document so work survives a context reset. Status first, then design deci
 - Decay gain per line from its loop time: measured T60 within about 15 % of the control.
 - Shimmer is passive: on two mixed channels a fraction is *replaced* by its pitch-shifted copy
   (`cos t x + sin t shift(x)`), the shifter's windows sum to one, its input is band-limited
-  (160 Hz .. 0.42 fs / ratio). No extra feedback path, so loop gain stays <= 1.
+  (160 Hz .. 0.42 fs / ratio). No extra feedback path, so loop gain stays <= 1. The shifters
+  always run (with Shimmer at 0 they contribute nothing), so they never hold stale audio.
 - Infinite: line gain exactly 1, bass absorption off, damping relaxed to >= 9 kHz. It sustains
   indefinitely only with Shimmer at 0: shimmer keeps moving energy up (or down) and out through
   its band limit, so an infinite tail with shimmer slowly dissolves (about -50 dB per minute at
@@ -189,9 +205,9 @@ Drift rates 0.047 .. 0.163 Hz x Growth (0.2 .. 5); depth = Drift x Bloom (0.5 ..
 
 ## Verification results (latest)
 
-- Unit tests: 41 tests, ~7980 checks, all pass.
+- Unit tests: 50 tests, ~8040 checks, all pass.
 - Render suite (`verdant_render --suite`): 320 renders, 0 failures; max peak -0.30 dBFS;
-  max |DC| 0.0008; worst CPU 6.0 % of one core at 48 kHz (everything maxed), typical preset 2-3.5 %;
+  max |DC| 0.0008; worst CPU 5.8 % of one core at 48 kHz (everything maxed), typical preset 2-3.5 %;
   worst at 192 kHz about 15 %.
 - pluginval v1.0.4, strictness 10, 44.1/48/96/192 kHz, block sizes 1..1024: SUCCESS.
 
@@ -222,8 +238,27 @@ Drift rates 0.047 .. 0.163 Hz x Growth (0.2 .. 5); depth = Drift x Bloom (0.5 ..
 10. With the reverb off, ducking was partly undone. -> only the arp wash is re-added.
 11. Alignment search cost 3x more at 44.1 kHz (stride truncation). -> rounded stride + refine.
 
-Worth a second review round after any larger DSP change: the tests that existed before the
-review all passed while these defects were present.
+## Independent review (round 2) — all fixed, each with a regression test
+
+1. (regression) The arp's 3 s anchor timeout made long-ringing notes sink 30-45 dB. -> body-only
+   recording, onset re-reference, note shortening, loudness-history fallback.
+2. Glassy chorus clicked when Voices changed (feedback normalised by voice count). -> gain sum.
+3. (regression) Tape level dipped 17-20 dB for ~50 ms when Speed/Stretch left or returned to
+   neutral. -> past-window alignment, aligned first grain, phase-aligned walk-down.
+4. Grain cloud burst +12 dB when Density/Size dropped; slow response when Density rose.
+   -> per-grain normalisation, interval rescale.
+5. Arp output depended on block size at 44.1 kHz (x.5-sample step boundaries) and with a stopped
+   transport (accumulated clock). -> tolerant rule, integer clock, segment rendering.
+6. Continuous NaN input cost a full engine reset per block (up to 257 % load at 192 kHz).
+   -> input sanitised up front.
+7. Glassy chorus clicked when switched back on (stale feedback state). -> keeps running.
+8. Raising Shimmer after a long silence replayed old audio from the pitch shifters. -> always fed.
+9. Tape Drive stepped at control rate (zipper). -> per-sample ramps.
+10. Arp with Pitch Track used a stale pitch for the first note after re-enabling. -> invalidate.
+
+Lesson: every review round found defects that the then-current tests did not; two of round 2's
+were caused by round 1's fixes. After any larger DSP change, get a fresh review and add the
+reproducer as a test.
 
 ## UI
 

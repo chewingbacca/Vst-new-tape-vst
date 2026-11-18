@@ -205,14 +205,16 @@ QUICK=1 ./scripts/test.sh         # shorter render matrix
 PLUGINVAL=/path/to/pluginval ./scripts/test.sh
 ```
 
-- **Unit tests** (`build/tests/verdant_tests`, also `ctest --test-dir build`): 41 tests covering
+- **Unit tests** (`build/tests/verdant_tests`, also `ctest --test-dir build`): 50 tests covering
   filters, saturation, limiter proof, tape transparency and transposition, grain loudness
   normalisation, pitch tracker accuracy, arp scale/key correctness, chorus reconstruction and
   click-freeness, reverb decay accuracy / infinite / freeze / run-away, and engine-level latency,
   bypass, block-size invariance, dry/wet time alignment, ducking, reset determinism,
   silence-in/silence-out, NaN recovery and click-free switching, plus regression tests for
-  every defect found by an independent code review (long-run varispeed, decay jumps, stale
-  reverb input, saturated grain pool, slow tempo, reset exactness).
+  every defect found by two independent code reviews (long-run varispeed, decay jumps, stale
+  reverb and shimmer buffers, saturated grain pool, slow tempo, reset exactness, long-ringing
+  notes in the arp, glassy-chorus voice changes, tape neutral transitions, density jumps,
+  continuous NaN input).
 - **Render suite** (`build/tests/verdant_render --suite --out DIR`): 320 offline renders — every
   preset × impulse / sine sweep / noise burst / synth phrase / plucked string / sung vowel, each
   module solo, silence, hostile input (+12 dBFS squares, DC), 44.1–192 kHz, block sizes 1–4096,
