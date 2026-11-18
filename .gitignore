@@ -1,0 +1,7 @@
+build/
+build-*/
+render_out/
+renders/
+*.wav
+.DS_Store
+__pycache__/
