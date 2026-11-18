@@ -67,10 +67,11 @@ public:
         tickRate = sr / 32.0f;
         ringLen = int (6.5f * sr);
         // voices may keep reading for up to 3.5 s after their source span was chosen
-        recA.prepare (ringLen + int (3.7f * sr));
-        recB.prepare (ringLen + int (3.7f * sr));
-        lpA.set (0.30f * sr, 0.7f, sr);
-        lpB.set (0.105f * sr, 0.7f, sr);
+        for (auto& r : rec) r.prepare (ringLen + int (3.7f * sr));
+        // Three copies of the capture, band-limited (4th-order Butterworth) for the read speed:
+        //   rec[0] full band  (ratio <= 1.3)   rec[1] 0.20 fs (ratio <= 2.2)   rec[2] 0.11 fs (ratio <= 4)
+        lpA1.set (0.20f * sr, 0.5412f, sr); lpA2.set (0.20f * sr, 1.3066f, sr);
+        lpB1.set (0.11f * sr, 0.5412f, sr); lpB2.set (0.11f * sr, 1.3066f, sr);
         recHp.setCutoff (70.0f, sr);
         tracker.prepare (sr);
 
@@ -87,8 +88,8 @@ public:
     void reset()
     {
         rng.seed (0xA4B0u);
-        recA.clear(); recB.clear();
-        lpA.reset(); lpB.reset(); recHp.reset();
+        for (auto& r : rec) r.clear();
+        lpA1.reset(); lpA2.reset(); lpB1.reset(); lpB2.reset(); recHp.reset();
         tracker.reset();
         for (auto& v : voices) v.active = false;
         recW = 0; recorded = 0; loudPos = 0; peakHold = 0.0f;
@@ -172,11 +173,13 @@ public:
             peakHold = std::max (env, peakHold * peakDecay);
 
             const float xh = recHp.process (x);   // keeps enveloped rumble / DC out of the notes
-            const float a1 = lpA.low (xh), b1 = lpB.low (xh);
+            const float a1 = lpA2.low (lpA1.low (xh)), b1 = lpB2.low (lpB1.low (xh));
             if (gate > 0.001f)
             {
-                recA.setAt (int (recW & 0x3fffffff), a1 * gate);
-                recB.setAt (int (recW & 0x3fffffff), b1 * gate);
+                const int w = int (recW & 0x3fffffff);
+                rec[0].setAt (w, xh * gate);
+                rec[1].setAt (w, a1 * gate);
+                rec[2].setAt (w, b1 * gate);
                 ++recW;
                 if (recorded < int64_t (ringLen)) ++recorded;
                 // remember where the sound was last "strong": decaying plucks are then
@@ -198,7 +201,8 @@ public:
             if (! v.active) continue;
             int i = v.startOffset;
             v.startOffset = 0;
-            const Ring& ring = v.useB ? recB : recA;
+            const Ring& ring = rec[v.band];
+            const Ring& ring2 = rec[v.band2];
             for (; i < n; ++i)
             {
                 float w;
@@ -211,7 +215,7 @@ public:
                 }
                 float s = ring.readHermite (v.pos);
                 if (v.sparkle > 0.0f)
-                    s += v.sparkle * recB.readHermite (v.pos2);
+                    s += v.sparkle * ring2.readHermite (v.pos2);
                 s *= w;
                 outL[i] += s * v.gl;
                 outR[i] += s * v.gr;
@@ -237,7 +241,8 @@ public:
 private:
     struct Voice
     {
-        bool active = false, useB = false;
+        bool active = false;
+        int band = 0, band2 = 2;
         int startOffset = 0;
         double pos = 0.0, pos2 = 0.0, inc = 1.0;
         float ph = 0.0f, phInc = 0.0f, sparkle = 0.0f;
@@ -329,9 +334,12 @@ private:
 
         v.inc = double (ratio);
         v.pos = double (anchor) - double (ratio) * dur - 8.0;
-        v.useB = ratio > 2.2f;
+        auto bandFor = [] (float r) { return r <= 1.3f ? 0 : (r <= 2.2f ? 1 : 2); };
+        v.band = bandFor (ratio);
+        v.band2 = bandFor (2.0f * ratio);
         v.sparkle = 0.0f;
-        if (ctl.sparkle > 0.001f && 2.0 * double (ratio) * dur <= maxSpan)
+        // the octave-up double is skipped where it could not be kept alias-free (above 4x)
+        if (ctl.sparkle > 0.001f && ratio <= 2.01f && 2.0 * double (ratio) * dur <= maxSpan)
         {
             v.sparkle = 0.7f * ctl.sparkle;
             v.pos2 = double (anchor) - 2.0 * double (ratio) * dur - 8.0;
@@ -367,8 +375,8 @@ private:
     Controls ctl;
     Rng rng;
 
-    Ring recA, recB;
-    Svf lpA, lpB;
+    Ring rec[3];
+    Svf lpA1, lpA2, lpB1, lpB2;
     OnePoleHP recHp;
     int ringLen = 0;
     int64_t recW = 0, recorded = 0, loudPos = 0;
