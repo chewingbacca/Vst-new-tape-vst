@@ -23,9 +23,10 @@ set(VERDANT_JUCE_TAG "9.0.5" CACHE STRING "JUCE git tag to fetch")
 
 # ------------------------------------------------------------------------------
 # DSP core: plain C++20, no JUCE. Shared by the plugin, renderer and tests.
-add_library(verdant_dsp STATIC
-    src/dsp/Engine.cpp
-    src/dsp/Presets.cpp)
+file(GLOB VERDANT_DSP_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/*.h)
+add_library(verdant_dsp STATIC ${VERDANT_DSP_SOURCES})
 target_include_directories(verdant_dsp PUBLIC src)
 target_compile_features(verdant_dsp PUBLIC cxx_std_20)
 if(MSVC)
@@ -92,6 +93,11 @@ if(VERDANT_BUILD_PLUGIN)
         PUBLIC
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
+
+    # Optional developer tool: renders the editor to PNG for visual checks.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/ui_snapshot/CMakeLists.txt)
+        add_subdirectory(tools/ui_snapshot)
+    endif()
 endif()
 
 # ------------------------------------------------------------------------------
