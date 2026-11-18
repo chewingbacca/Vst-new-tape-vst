@@ -18,7 +18,7 @@ Living document so work survives a context reset. Status first, then design deci
 - [x] Reverb (16-line FDN, in-loop shimmer, freeze, infinite, energy governor).
 - [x] Output (tilt, roots shelf, width, ducking, look-ahead limiter).
 - [x] Macros, 28 factory presets.
-- [x] Offline render harness + verification suite (320 renders), 50 unit tests.
+- [x] Offline render harness + verification suite (320 renders), 57 unit tests.
 - [x] Two independent code reviews of `src/dsp`; all 21 findings fixed with regression tests (see below).
 - [x] Custom UI incl. typed value entry and HiDPI check (see "UI" below).
 - [x] README.
@@ -89,8 +89,13 @@ Living document so work survives a context reset. Status first, then design deci
   tone stays a pure tone (within 1 cent) instead of a comb-filtered cluster. Both comparison
   windows END at the grains' read positions, so only written audio is compared; the search runs
   on a ~16 kHz grid and is refined at full resolution. The first non-neutral grain is aligned to
-  the neutral one, and back at neutral the leftover offset is walked down (at most 3/4 per grain,
-  phase-aligned) to zero, so moving Speed/Stretch through neutral does not dip the level.
+  the neutral one. Back at neutral the leftover offset is walked down to zero: each step is
+  scored against the previous grain AND the un-offset target, which for a periodic signal lands
+  half-way in phase between them. The phase therefore turns the short way towards the dry
+  signal (never through anti-phase), in steps of at most a quarter cycle; the first step may
+  search the full 12 ms, later ones at most 3/4 of the previous offset, so the walk always ends
+  (exact delay again after <= 0.4 s). Cost: the wet signal alone can dip 3-4.5 dB for a few ms.
+  A detuned wet signal beats against the dry one anyway; the transition no longer adds to it.
 - Drive coefficients are ramped per sample (no zipper noise).
 - Speeding up band-limits what is recorded (4th-order Butterworth at 0.42 fs / ratio): no aliasing.
 - Stretch: the read head falls behind at rate 1 - 1/stretch and snaps back to "now" every bar
@@ -124,6 +129,11 @@ Living document so work survives a context reset. Status first, then design deci
 - Records the input only while it sounds AND is within ~20 dB of its recent peak ("body"), so the
   quiet tail of a ringing note cannot push its body out of the 6.5 s ring. An onset detector
   (level > 2x its 60 ms average) re-references the peak, so a softer new note is picked up at once.
+  A softer sound without a clear onset (quiet legato note, pad swelling back) is recognised by
+  holding its level: when the 100 ms mean has not dropped more than 1 dB against any of the four
+  blocks before it, the peak reference falls with a 0.2 s half-life instead of 12 s. A ringing
+  tail keeps falling (T60 17 s = 1.4 dB per 400 ms), so it stays excluded. Stale time after a
+  loud note: 0.3-2 s for a note 9-30 dB softer.
   Notes are read from the region that ends where the sound was last "strong" (>= half the peak):
   a decaying note is replayed from its body, not its tail. If the slice does not fit in front of
   the anchor the note is shortened; only when the anchor is about to be overwritten does a coarse
@@ -139,6 +149,14 @@ Living document so work survives a context reset. Status first, then design deci
   key-agnostic). Pitch Track on: YIN tracker (decimated to ~12 kHz, 85 ms window, < 10 cents on
   rich tones 82 Hz .. 1 kHz) and notes land on the Key/Scale exactly, correcting input detune.
 - Linger: time constant 0.1 s .. 12 s; 100 % never fades.
+- Transport jumps: `Engine::process` compares each block's start position with where the clock
+  would have been (tolerance 0.01 beat + a quarter of the block, so host rounding and tempo ramps
+  pass). On a jump the arp drops the step it had scheduled from the old position and the control
+  tick is re-run on that sample. The step it lands in sounds at once, unless a note fired less
+  than min(1/4 step, 60 ms) ago or the next boundary is that close. Loops of 1, 2 or 8 steps give
+  exactly 1, 2, 8 notes per pass at 44.1 and 48 kHz.
+- `PitchTracker::invalidate()` also discards the analysis frame: the next estimate comes from
+  85 ms of new audio only.
 
 ### Chorus (`Chorus.h`)
 - 24 dB/oct high-pass feeds the voices; the low band is the exact remainder (perfect
@@ -147,7 +165,8 @@ Living document so work survives a context reset. Status first, then design deci
   count fades voices in/out without moving the others. Level is normalised by sum of gains^2.
 - Depth is defined in cents (max 21) and converted to delay excursion per voice rate.
 - Glassy: 1.5-7.5 ms taps, 40 % of the depth, feedback of the gain-weighted *mean* tap (loop gain
-  <= 0.5 for any phase relationship, and no step when the voice count changes), high-passed and
+  <= 0.5 for any phase relationship, and no step when the voice count changes; each voice's
+  share of the feedback is ramped per sample), high-passed and
   high-shelved wet. In glassy mode the module keeps running while switched off (the feedback path
   has memory); in smooth mode it idles.
 
@@ -205,9 +224,9 @@ Drift rates 0.047 .. 0.163 Hz x Growth (0.2 .. 5); depth = Drift x Bloom (0.5 ..
 
 ## Verification results (latest)
 
-- Unit tests: 50 tests, ~8040 checks, all pass.
+- Unit tests: 57 tests, ~8260 checks, all pass.
 - Render suite (`verdant_render --suite`): 320 renders, 0 failures; max peak -0.30 dBFS;
-  max |DC| 0.0008; worst CPU 5.8 % of one core at 48 kHz (everything maxed), typical preset 2-3.5 %;
+  max |DC| 0.0008; worst CPU 6.1 % of one core at 48 kHz (everything maxed), typical preset 2-3.5 %;
   worst at 192 kHz about 15 %.
 - pluginval v1.0.4, strictness 10, 44.1/48/96/192 kHz, block sizes 1..1024: SUCCESS.
 
@@ -256,9 +275,40 @@ Drift rates 0.047 .. 0.163 Hz x Growth (0.2 .. 5); depth = Drift x Bloom (0.5 ..
 9. Tape Drive stepped at control rate (zipper). -> per-sample ramps.
 10. Arp with Pitch Track used a stale pitch for the first note after re-enabling. -> invalidate.
 
+## Independent review (round 3) — all fixed, each with a regression test
+
+Round 3 re-checked the ten round-2 fixes (six verified outright) and found:
+
+1. (regression) Arp kept replaying a loud note for 6-40 s when a softer one followed without a
+   clear onset (12 s peak-hold). -> steady-level re-reference (0.3-2 s now).
+2. Arp steps doubled or stopped at loop wraps and when play started next to a step (a step
+   scheduled from the pre-jump position still fired; jumps onto the previous step were taken
+   for jitter). -> engine-level jump detection, sample-exact re-schedule, seam guard.
+3. (regression) Tape at 50 % mix: after Speed returned to neutral the wet path rotated through
+   anti-phase against the dry signal (up to 107 ms more than 6 dB down). -> walk-down scored
+   against the previous grain and the target; worst case now ~40 ms, and the remaining deep
+   nulls are the detune's own beat, present before the return.
+4. Glassy chorus: feedback weights still stepped at control rate (-40 dBFS tick when Voices
+   jumped 2 -> 24). -> per-sample ramps (-72 dBFS, steady state -83).
+5. Pitch Track: the first note after Arp off -> on could still use the old pitch (the analysis
+   frame kept the old audio). -> frame discarded on invalidate.
+6. Non-finite transport values: NaN tempo indexed the Hann table out of range (crash through the
+   engine API; the plugin wrapper already filtered tempo), NaN/Inf ppq fired 12x the notes.
+   -> tempo and position sanitised in `Engine::process`, NaN-safe table lookup.
+
+Also verified in round 3 (no change needed): block-size invariance of all 28 presets at
+44.1/48/192 kHz (1008 renders, 0 differ), `reset()` exactness (336 renders), tape read-ahead
+safety, reverb boundedness for 3 minutes at infinite decay with full shimmer, grain rate under
+modulation, no drift over 5 minutes.
+
+Known and accepted: Speed -7 st at 48 kHz carries a constant ~3 cent offset on a pure tone
+(WSOLA lock, not roughness). A Speed jump of a semitone or more dips the wet signal 5-13 dB for
+~10 ms while detuned and neutral grains overlap; that is inherent to cross-fading two pitches.
+
 Lesson: every review round found defects that the then-current tests did not; two of round 2's
-were caused by round 1's fixes. After any larger DSP change, get a fresh review and add the
-reproducer as a test.
+and two of round 3's were caused by the previous round's fixes. After any larger DSP change, get
+a fresh review and add the reproducer as a test. Check each new test against the old code too
+(it must fail there).
 
 ## UI
 

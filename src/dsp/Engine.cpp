@@ -65,7 +65,7 @@ void Engine::reset()
     bandLo.reset(); bandHi.reset();
     for (auto& h : ambHp) h.reset();
     chunkPos = 0;
-    beat = 0.0; freeBase = 0.0; freeInc = 0.0; freeSamples = 0;
+    beat = 0.0; freeBase = 0.0; freeInc = 0.0; freeSamples = 0; clockValid = false;
     firstBlock = true;
     meterIn = meterOutL = meterOutR = meterWet = 0.0f;
     eLow = eMid = eHigh = 0.0f;
@@ -378,14 +378,20 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
         if (isBad (right[i])) right[i] = 0.0f;
     }
 
+    // Hosts have been seen to hand over garbage: a non-finite tempo falls back to 120 BPM and
+    // a non-finite (or absurd) position is treated as a stopped transport.
+    const double bpm = std::isfinite (transport.bpm) ? transport.bpm : 120.0;
+    const bool playing = transport.playing && std::isfinite (transport.ppq) && std::abs (transport.ppq) < 1.0e9;
+
     // the real tempo, however slow: the clock must agree with the host's ppq at any block size
-    samplesPerBeat = 60.0 * double (sr) / std::clamp (transport.bpm, 1.0, 999.0);
+    samplesPerBeat = 60.0 * double (sr) / std::clamp (bpm, 1.0, 999.0);
     beatInc = 1.0 / samplesPerBeat;
 
     // Beat position of sample `done` of this block. Playing: host ppq + offset. Stopped: an
     // integer sample counter times the increment, so the value at any sample is the same
     // however the host slices its blocks.
-    if (transport.playing)
+    const double expected = freeBase + double (freeSamples) * freeInc;   // if nothing jumped
+    if (playing)
     {
         freeBase = transport.ppq;
         freeSamples = 0;
@@ -397,6 +403,18 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
         freeSamples = 0;
         freeInc = beatInc;
     }
+
+    // A discontinuity (loop wrap, relocation, play pressed somewhere else) takes effect on the
+    // first sample of this block: the arp drops the step it had scheduled from the old position
+    // and the control tick is re-run from the new one. Small deviations are host rounding or a
+    // tempo ramp and are ridden through.
+    const double start = freeBase + double (freeSamples) * freeInc;
+    if (clockValid && std::abs (start - expected) > 0.01 + 0.25 * double (n) * beatInc)
+    {
+        arp.transportJumped();
+        chunkPos = 0;
+    }
+    clockValid = true;
 
     int done = 0;
     while (done < n)

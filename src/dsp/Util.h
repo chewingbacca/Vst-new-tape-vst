@@ -349,7 +349,7 @@ struct HannTable
     // phase 0..1
     float operator() (float ph) const
     {
-        const float x = clampf (ph, 0.0f, 1.0f) * float (N);
+        const float x = (ph > 0.0f ? std::min (ph, 1.0f) : 0.0f) * float (N);   // NaN-safe
         const int   i = int (x);
         return lerp (t[i], t[i + 1], x - float (i));
     }

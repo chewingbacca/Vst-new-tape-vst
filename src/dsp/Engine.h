@@ -80,6 +80,7 @@ private:
     double beat = 0.0, beatInc = 0.0, samplesPerBeat = 24000.0;
     double freeBase = 0.0, freeInc = 0.0;       // free-running clock: base + samples * inc
     int64_t freeSamples = 0;
+    bool clockValid = false;                    // false until the first block after a reset
 
     // ---- modulation
     DriftLfo drift[4];

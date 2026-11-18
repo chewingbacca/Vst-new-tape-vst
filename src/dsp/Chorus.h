@@ -148,6 +148,14 @@ public:
         // changing the voice count cannot step it (and loop gain stays <= fbAmount)
         fbNorm[0] = 1.0f / std::max (gainSum[0], 1.0f);
         fbNorm[1] = 1.0f / std::max (gainSum[1], 1.0f);
+        // ... and each voice's share is ramped per sample: a stepped weight inside the feedback
+        // sum would tick at the control rate while voices fade in or out
+        for (auto& v : voices)
+        {
+            const float w = v.gain * fbNorm[v.src];
+            if (first) v.rFbW.snap (w);
+            v.rFbW.begin (w, 32);
+        }
 
         const float dryG = std::cos (mix * 0.5f * kPi);
         const float wetG = std::sin (mix * 0.5f * kPi) * norm;
@@ -173,7 +181,7 @@ public:
             for (int k = 0; k < numRunning; ++k)
             {
                 Voice& v = voices[size_t (running[k])];
-                for (int i = 0; i < n; ++i) { v.rDelay.next(); v.rGl.next(); v.rGr.next(); }
+                for (int i = 0; i < n; ++i) { v.rDelay.next(); v.rGl.next(); v.rGr.next(); v.rFbW.next(); }
             }
             for (int i = 0; i < n; ++i) { rDry.next(); rWet.next(); }
             return;
@@ -198,10 +206,10 @@ public:
                 const float tap = dl[v.src].tapHermite (v.rDelay.next());
                 wl += tap * v.rGl.next();
                 wr += tap * v.rGr.next();
-                fbSum[v.src] += tap * v.gain;
+                fbSum[v.src] += tap * v.rFbW.next();
             }
-            fb[0] = fbSum[0] * fbNorm[0];
-            fb[1] = fbSum[1] * fbNorm[1];
+            fb[0] = fbSum[0];
+            fb[1] = fbSum[1];
 
             wl = wetShelf[0].process (wetHp[0].process (wl));
             wr = wetShelf[1].process (wetHp[1].process (wr));
@@ -220,7 +228,7 @@ private:
         float phase = 0, phase2 = 0, rateMul = 1, baseSmoothMs = 12, baseGlassMs = 3;
         float side = 1, panAmount = 1, gain = 0;
         int src = 0;
-        Ramp rDelay, rGl, rGr;
+        Ramp rDelay, rGl, rGr, rFbW;
     };
 
     float sr = 48000.0f, tickRate = 1500.0f;

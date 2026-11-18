@@ -1093,7 +1093,7 @@ TEST (chorus_glassy_voice_changes_and_reenable_do_not_click)
         return hfPeak (l, sr, 9000.0f, 1.0, 6.0);
     };
     const float steady = run (0);
-    CHECK (run (1) < steady * 6.0f + 1.0e-3f);     // voices 2 <-> 24   (was about -22 dBFS)
+    CHECK (run (1) < steady * 2.0f + 1.0e-3f);     // voices 2 <-> 24   (was about -22 dBFS, then -40)
     CHECK (run (2) < steady * 6.0f + 1.0e-3f);     // off / on          (was about -36 dBFS)
     CHECK (run (3) < steady * 6.0f + 1.0e-3f);     // mix 0 <-> 100 %
 }
@@ -1126,7 +1126,9 @@ TEST (tape_leaving_and_returning_to_neutral_does_not_dip)
             double lowest = 1.0e9;
             for (int i = int (sr); i + 480 < N; i += 240)
                 lowest = std::min (lowest, rmsOf (oL.data() + i, 480));
-            CHECK (20.0 * std::log10 (lowest / ref) > -3.0);      // was -17 .. -20 dB
+            // The return to neutral turns the phase towards the dry signal in steps of at most
+            // a quarter cycle, which costs the wet signal alone a few dB for a few milliseconds.
+            CHECK (20.0 * std::log10 (lowest / ref) > -5.0);      // was -17 .. -20 dB
         }
 }
 
@@ -1284,6 +1286,239 @@ TEST (tape_drive_moves_without_zipper_noise)
     };
     const float steady = run (false), jumping = run (true);
     CHECK (jumping < steady * 4.0f + 2.0e-4f);     // was 150x above the steady level
+}
+
+TEST (arp_picks_up_a_softer_note_after_a_loud_one)
+{
+    // A loud note, then (legato) a different note 24 dB softer that holds its level. The arp
+    // must move on to the new note within a couple of seconds (it kept replaying the loud one
+    // for 17 s), while a ringing tail is still left out (see the long-ringing-note test).
+    const float sr = 48000.0f;
+    Arp arp;
+    arp.prepare (sr);
+    Arp::Controls c;
+    c.pattern = 0; c.rate = 3; c.range = 1; c.scale = 14; c.sparkle = 0.0f; c.hold = 1.0f; c.track = false;
+    const int N = int (sr) * 12;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    double ph = 0.0;
+    for (int i = 0; i < N; ++i)
+    {
+        const bool loud = i < int (sr) * 2;
+        ph += (loud ? 220.0 : 330.0) / double (sr);
+        in[size_t (i)] = (loud ? 0.5f : 0.5f * 0.063f) * float (std::sin (2.0 * M_PI * ph));
+    }
+    runBlocks (N, [&] (int pos) { c.beat = double (pos) / 24000.0; arp.control (c); },
+               [&] (int pos, int n) { arp.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+    const double loudLevel = rmsOf (oL.data() + int (sr), int (sr));
+    const double finalLevel = rmsOf (oL.data() + int (sr) * 11, int (sr));
+    CHECK (finalLevel > 1.0e-4 && finalLevel < loudLevel * 0.2);
+    for (int sec = 5; sec < 11; ++sec)      // 3 s after the change the old note is gone for good
+    {
+        const double lvl = rmsOf (oL.data() + int (sr) * sec, int (sr));
+        CHECK (lvl < finalLevel * 2.0 && lvl > finalLevel * 0.5);
+    }
+    const double f = dominantHz (oL.data() + int (sr) * 6, int (sr), sr, 150.0, 500.0);
+    CHECK (std::abs (cents (f, 330.0)) < 30.0);
+}
+
+TEST (arp_picks_up_a_quiet_swell_after_a_loud_note)
+{
+    // loud note, 0.5 s of silence, then a pad that fades in over 2 s to 26 dB below the note
+    const float sr = 48000.0f;
+    Arp arp;
+    arp.prepare (sr);
+    Arp::Controls c;
+    c.pattern = 0; c.rate = 3; c.range = 1; c.scale = 14; c.sparkle = 0.0f; c.hold = 1.0f; c.track = false;
+    const int N = int (sr) * 12;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    for (int i = 0; i < N; ++i)
+    {
+        const float t = float (i) / sr;
+        const float a = t < 2.0f ? 0.5f : (t < 2.5f ? 0.0f : 0.025f * std::min (1.0f, (t - 2.5f) / 2.0f));
+        in[size_t (i)] = a * std::sin (kTwoPi * (t < 2.25f ? 220.0f : 330.0f) * t);
+    }
+    runBlocks (N, [&] (int pos) { c.beat = double (pos) / 24000.0; arp.control (c); },
+               [&] (int pos, int n) { arp.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+    const double f = dominantHz (oL.data() + int (sr) * 7, int (sr), sr, 150.0, 500.0);
+    CHECK (std::abs (cents (f, 330.0)) < 30.0);      // was still the 220 Hz note, for 21 s
+}
+
+TEST (engine_arp_fires_once_per_step_when_the_host_loops)
+{
+    // The host loops a region and splits its blocks at the loop end. Every pass must start
+    // exactly one note per step: no doubled note at the seam, no pass without notes.
+    struct Case { int rate; double loopBeats; int expected; };
+    for (double sr : { 44100.0, 48000.0 })
+        for (const Case& k : { Case { 3, 4.0, 8 }, Case { 0, 4.0, 2 }, Case { 1, 2.0, 2 }, Case { 1, 1.0, 1 }, Case { 5, 3.0, 12 } })
+            for (int block : { 512, 480, 64 })
+            {
+                Engine e;
+                e.prepare (sr, 512);
+                ParamValues pv;
+                pv[pArpRate] = float (k.rate); pv[pArpPattern] = 0; pv[pArpHold] = 1.0f; pv[pGrainOn] = 0;
+                e.setParams (pv);
+                const double bpm = 120.0;
+                double ppq = 0.0;
+                int64_t pos = 0;
+                std::vector<float> l (512), r (512);
+                int passes = 0, last = 0;
+                while (passes < 8)
+                {
+                    const int toEnd = int (std::llround ((k.loopBeats - ppq) * 60.0 * sr / bpm));
+                    const int m = std::min (block, toEnd);
+                    for (int i = 0; i < m; ++i)
+                        l[size_t (i)] = r[size_t (i)] = 0.25f * float (std::sin (2.0 * M_PI * 220.0 * double (pos + i) / sr));
+                    Transport t; t.bpm = bpm; t.playing = true; t.ppq = ppq;
+                    e.process (l.data(), r.data(), m, t);
+                    pos += m;
+                    ppq += double (m) * bpm / (60.0 * sr);
+                    if (ppq >= k.loopBeats - 1.0e-9)
+                    {
+                        ppq = 0.0;
+                        const int count = e.meters.arpPulse.load();
+                        if (passes >= 2) CHECK (count - last == k.expected);    // (nothing is recorded yet in pass 0)
+                        last = count;
+                        ++passes;
+                    }
+                }
+            }
+}
+
+TEST (engine_arp_does_not_double_fire_when_play_starts_next_to_a_step)
+{
+    // stopped (free-running clock), then play pressed just before / just after a step boundary
+    for (double startPpq : { 3.99, 4.0, 4.01, 2.3 })
+    {
+        const double sr = 48000.0;
+        Engine e;
+        e.prepare (sr, 256);
+        ParamValues pv;
+        pv[pArpRate] = 1.0f; pv[pArpPattern] = 0; pv[pArpHold] = 1.0f; pv[pGrainOn] = 0;   // quarter notes
+        e.setParams (pv);
+        std::vector<float> l (256), r (256);
+        int64_t pos = 0;
+        auto run = [&] (int blocks, bool playing, double& ppq)
+        {
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < 256; ++i)
+                    l[size_t (i)] = r[size_t (i)] = 0.25f * float (std::sin (2.0 * M_PI * 220.0 * double (pos + i) / sr));
+                Transport t; t.bpm = 120.0; t.playing = playing; t.ppq = ppq;
+                e.process (l.data(), r.data(), 256, t);
+                pos += 256;
+                if (playing) ppq += 256.0 * 120.0 / (60.0 * sr);
+            }
+        };
+        double ppq = 0.0;
+        run (500, false, ppq);                      // 2.7 s stopped
+        const int before = e.meters.arpPulse.load();
+        ppq = startPpq;
+        run (47, true, ppq);                        // 0.25 s = half a step
+        const int started = e.meters.arpPulse.load() - before;
+        CHECK (started <= 1);                       // was 3 notes within 5 ms
+    }
+}
+
+TEST (engine_survives_garbage_transport_values)
+{
+    const double sr = 48000.0;
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    struct Case { double bpm, ppq; };
+    int reference = -1;
+    for (const Case& k : { Case { 120.0, 0.0 }, Case { nan, 0.0 }, Case { inf, 0.0 }, Case { 120.0, nan }, Case { 120.0, inf }, Case { 120.0, -inf }, Case { 120.0, 1.0e300 } })
+    {
+        Engine e;
+        e.prepare (sr, 512);
+        e.setParams (ParamValues());
+        std::vector<float> l (512), r (512);
+        bool finite = true;
+        const bool garbagePpq = ! (std::abs (k.ppq) < 1.0e9);
+        for (int b = 0; b < 400; ++b)
+        {
+            for (int i = 0; i < 512; ++i)
+                l[size_t (i)] = r[size_t (i)] = 0.25f * float (std::sin (2.0 * M_PI * 220.0 * double (b * 512 + i) / sr));
+            Transport t; t.bpm = k.bpm; t.playing = true;
+            t.ppq = garbagePpq ? k.ppq : double (b) * 512.0 * 2.0 / sr;
+            e.process (l.data(), r.data(), 512, t);
+            for (int i = 0; i < 512; ++i) finite = finite && std::isfinite (l[size_t (i)]) && std::isfinite (r[size_t (i)]);
+        }
+        CHECK (finite);
+        const int notes = e.meters.arpPulse.load();
+        if (reference < 0) reference = notes;
+        CHECK (std::abs (notes - reference) <= 1);      // garbage ppq gave 12x the notes; NaN bpm crashed
+    }
+    CHECK (hannTable() (float (nan)) == 0.0f);
+}
+
+TEST (tape_return_to_neutral_does_not_cancel_against_the_dry_signal)
+{
+    // Tape at 50 % mix: after Speed returns to 0 the wet path must come back into phase with
+    // the clean signal by the short way. (It used to rotate through anti-phase: the sum sat
+    // 12 .. 50 dB down for 100 ms and more.) Levels are compared with the level just before
+    // the return, because a detuned wet signal beats against the dry one anyway.
+    const float sr = 48000.0f;
+    const int N = int (sr) * 5;
+    double worstMs = 0.0;
+    for (float hz : { 208.33f, 291.67f, 440.0f })
+        for (float speed : { 0.3f, -2.0f })
+            for (int j = 0; j < 10; ++j)
+            {
+                const double tBack = 3.0 + 0.0293 * double (j);
+                Tape t;
+                t.prepare (sr);
+                Tape::Controls c;
+                c.wow = c.flutter = c.drive = c.age = 0.0f;
+                c.mix = 0.5f;
+                std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+                for (int i = 0; i < N; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * hz * float (i) / sr);
+                runBlocks (N, [&] (int pos)
+                           {
+                               const double tsec = double (pos) / sr;
+                               c.speedSemis = (tsec >= 1.0 && tsec < tBack) ? speed : 0.0f;
+                               c.beat = tsec * 2.0 + 0.37;
+                               t.control (c);
+                           },
+                           [&] (int pos, int n) { t.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+                const int per = std::max (1, int (std::lround (sr / hz)));
+                const int win = per * std::max (1, int (std::lround (0.008f * sr / float (per))));
+                const double steady = rmsOf (oL.data() + int (sr) / 2, win * 8);
+                const int back = int (tBack * sr);
+                double pre = steady;
+                for (int a = back - int (0.03f * sr); a + win < back; a += win / 4)
+                    pre = std::min (pre, rmsOf (oL.data() + a, win));
+                double below = 0.0;
+                for (int a = back; a + win < back + int (sr); a += win / 4)
+                    if (rmsOf (oL.data() + a, win) < 0.5 * pre) below += double (win / 4) / sr;
+                worstMs = std::max (worstMs, below * 1000.0);
+            }
+    std::printf ("     (tape return to neutral, 50 %% mix: worst time 6 dB below the level before it: %.0f ms)\n", worstMs);
+    CHECK (worstMs < 60.0);
+}
+
+TEST (pitch_tracker_never_reports_the_old_note_after_being_invalidated)
+{
+    // C3, then (after invalidate) E3: every estimate afterwards must be the new note. The
+    // analysis frame used to keep the old audio, so the first hop still said C3.
+    for (int offset : { 0, 100, 777, 1500, 3000 })
+    {
+        PitchTracker pt;
+        pt.prepare (48000.0f);
+        for (int i = 0; i < 48000 + offset; ++i) pt.push (0.3f * std::sin (kTwoPi * 130.81f * float (i) / 48000.0f));
+        CHECK (std::abs (cents (pt.currentHz(), 130.81)) < 20.0);
+        pt.invalidate();
+        bool everWrong = false, found = false;
+        for (int i = 0; i < 24000; ++i)
+        {
+            pt.push (0.3f * std::sin (kTwoPi * 164.81f * float (i) / 48000.0f));
+            const float hz = pt.currentHz();
+            if (hz > 0.0f)
+            {
+                found = true;
+                everWrong = everWrong || std::abs (cents (hz, 164.81)) > 30.0;
+            }
+        }
+        CHECK (found && ! everWrong);
+    }
 }
 
 TEST (pitch_tracker_estimate_can_be_invalidated)

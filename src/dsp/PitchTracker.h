@@ -33,7 +33,7 @@ public:
     {
         std::fill (buf.begin(), buf.end(), 0.0f);
         lp.reset();
-        wpos = 0; phase = 0; sinceHop = 0;
+        wpos = 0; phase = 0; sinceHop = 0; fresh = 0;
         midi = -1.0f; hz = 0.0f; confidence = 0.0f; sinceConfident = 1 << 28;
     }
 
@@ -45,15 +45,18 @@ public:
         buf[size_t (wpos)] = f;
         wpos = (wpos + 1) % window;
         if (sinceConfident < (1 << 28)) ++sinceConfident;
+        if (fresh < window) ++fresh;
         if (++sinceHop >= hop)
         {
             sinceHop = 0;
-            analyse();
+            if (fresh >= window)    // only frames made entirely of audio heard since the last reset
+                analyse();
         }
     }
 
-    // Forget the current estimate (e.g. the tracker was not fed for a while).
-    void invalidate() { sinceConfident = 1 << 28; }
+    // Forget the current estimate and everything heard so far (e.g. the tracker was not fed
+    // for a while): the next estimate comes from a full frame of new audio.
+    void invalidate() { sinceConfident = 1 << 28; fresh = 0; sinceHop = 0; }
 
     // MIDI note (fractional) of the most recent confident estimate, or < 0 if none is fresh.
     float currentMidi() const { return sinceConfident < holdSamples ? midi : -1.0f; }
@@ -133,7 +136,7 @@ private:
 
     float sr = 48000.0f, dRate = 12000.0f;
     int decim = 4, tauMin = 10, tauMax = 208, window = 1024, integ = 816, hop = 384;
-    int wpos = 0, phase = 0, sinceHop = 0, holdSamples = 7200, sinceConfident = 1 << 28;
+    int wpos = 0, phase = 0, sinceHop = 0, holdSamples = 7200, sinceConfident = 1 << 28, fresh = 0;
     float midi = -1.0f, hz = 0.0f, confidence = 0.0f;
     Svf lp;
     std::vector<float> buf, lin, diff;

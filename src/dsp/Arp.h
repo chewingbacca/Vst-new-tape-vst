@@ -80,7 +80,9 @@ public:
         gateAtk = 1.0f - std::exp (-1.0f / (0.003f * sr));
         gateRel = 1.0f - std::exp (-1.0f / (0.040f * sr));
         hangSamples = int (0.08f * sr);
-        peakDecay = std::pow (0.5f, 1.0f / (12.0f * sr));    // slow: new onsets re-reference it anyway
+        peakDecay = std::pow (0.5f, 1.0f / (12.0f * sr));    // slow while a sound rings out ...
+        peakDecayFast = std::pow (0.5f, 1.0f / (0.2f * sr)); // ... fast while a softer sound holds steady
+        steadyBlock = std::max (32, int (0.1f * sr));
         histBlock = std::max (64, int (0.02f * sr));
         hist.assign (size_t (ringLen / histBlock + 8), 0.0f);
         slowCoef = 1.0f - std::exp (-1.0f / (0.060f * sr));
@@ -99,9 +101,12 @@ public:
         recW = 0; recorded = 0; loudPos = 0; peakHold = 0.0f;
         std::fill (hist.begin(), hist.end(), 0.0f);
         slowEnv = 0.0f; sinceOnset = 0; trackOn = false;
+        steadyAcc = 0.0; steadyCount = 0; steady = false;
+        for (auto& b : steadyHist) b = 0.0f;
         env = 0.0f; gate = 0.0f; gateOpen = false; bodyOpen = false; hang = 0;
         linger = 0.0f;
         lastStep = INT64_MIN; pendingOffset = -1; cursor = 0;
+        jumped = false; sinceFire = int64_t (1) << 40;
         lastRandom = -1; stepCount = 0;
         first = true;
         noteCount = 0; lastDegree = 0;
@@ -132,16 +137,38 @@ public:
         const double stepBeats = kDivBeats[std::clamp (c.rate, 0, 7)];
         const double beatInc = 1.0 / c.samplesPerBeat;
         const int64_t stepNow = int64_t (std::floor ((c.beat + 1.0e-7) / stepBeats));
-        if (lastStep == INT64_MIN)
-            lastStep = stepNow - 1;         // fire immediately on the first block
+        const bool firstTick = lastStep == INT64_MIN;
+        const int64_t diff = firstTick ? 0 : stepNow - lastStep;
 
-        if (stepNow != lastStep && stepNow != lastStep - 1)
+        if (firstTick)
         {
-            // first block, or the transport jumped: fire right away
+            pendingOffset = 0;              // fire immediately on the first block
+            pendingStep = stepNow;
+        }
+        else if (jumped || diff > 1 || diff < -1)
+        {
+            // The transport jumped (loop wrap, relocation, play pressed): start again from the
+            // step it landed in. That step sounds right away - unless a note has only just
+            // fired, or the next boundary is about to fire one anyway, so a loop never doubles
+            // or swallows the note at its seam.
+            const double guard = std::min (0.25 * stepBeats * c.samplesPerBeat, 0.06 * double (sr));
+            const double toNext = (double (stepNow + 1) * stepBeats - c.beat) / beatInc;
+            lastStep = stepNow;
+            if (double (sinceFire) >= guard && toNext > guard)
+            {
+                pendingOffset = 0;
+                pendingStep = stepNow;
+            }
+        }
+        else if (diff == 1)
+        {
+            // the boundary fell exactly on the first sample of this chunk
             pendingOffset = 0;
             pendingStep = stepNow;
         }
-        else if (stepNow + 1 > lastStep)
+        jumped = false;
+
+        if (pendingOffset < 0 && stepNow + 1 > lastStep)
         {
             const double nextBoundary = double (stepNow + 1) * stepBeats;
             const double samplesTo = (nextBoundary - c.beat) / beatInc;
@@ -162,6 +189,14 @@ public:
         trackOn = c.on;
     }
 
+    // The host's position is discontinuous from this sample on: drop the step that was
+    // scheduled from the old position. The next control() call starts from the new one.
+    void transportJumped()
+    {
+        pendingOffset = -1;
+        jumped = true;
+    }
+
     // outL/outR receive the arp voices (overwritten).
     void process (const float* inL, const float* inR, float* outL, float* outR, int n)
     {
@@ -177,6 +212,7 @@ public:
             {
                 lastStep = pendingStep;
                 pendingOffset = -1;
+                sinceFire = -int64_t (i);
                 if (ctl.on && linger > 0.001f)
                 {
                     // bring every voice up to this sample first, so a voice that has just ended
@@ -202,7 +238,25 @@ public:
                 peakHold = env;
                 sinceOnset = 0;
             }
-            peakHold = std::max (env, peakHold * peakDecay);
+
+            // A softer sound that holds its level (or swells) after a louder one - a quiet
+            // legato note, a pad fading back in - is new material, not a tail: a ringing tail
+            // keeps falling. "Steady" means the 100 ms mean level has not dropped by more than
+            // 1 dB against any of the four blocks before it; the reference then comes down to
+            // the new level within a fraction of a second instead of many seconds.
+            steadyAcc += double (env);
+            if (++steadyCount >= steadyBlock)
+            {
+                const float mean = float (steadyAcc / double (steadyCount));
+                float recent = 0.0f;
+                for (float b : steadyHist) recent = std::max (recent, b);
+                steady = mean > 0.006f && mean >= 0.89f * recent;
+                for (int k = 3; k > 0; --k) steadyHist[k] = steadyHist[k - 1];
+                steadyHist[0] = mean;
+                steadyAcc = 0.0; steadyCount = 0;
+            }
+            const bool rereference = steady && gateOpen && env < 0.5f * peakHold;
+            peakHold = std::max (env, peakHold * (rereference ? peakDecayFast : peakDecay));
 
             // Record only the part of a sound that is within about 20 dB of its peak. The long
             // quiet tail of a ringing note is left out, so it cannot push the note's body out of
@@ -236,6 +290,7 @@ public:
             if (trackOn) tracker.push (x);
         }
         cursor += n;
+        if (sinceFire < (int64_t (1) << 40)) sinceFire += n;
 
         renderVoices (outL, outR, rendered, n);
 
@@ -463,7 +518,11 @@ private:
     std::vector<float> hist;
     int histBlock = 960, onsetHoldoff = 3840, sinceOnset = 0;
     float slowEnv = 0.0f, slowCoef = 0.001f;
-    float peakHold = 0.0f, peakDecay = 1.0f;
+    float peakHold = 0.0f, peakDecay = 1.0f, peakDecayFast = 1.0f;
+    double steadyAcc = 0.0;
+    int steadyBlock = 4800, steadyCount = 0;
+    float steadyHist[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool steady = false;
 
     float env = 0.0f, gate = 0.0f, envAtk = 0, envRel = 0, gateAtk = 0, gateRel = 0;
     bool gateOpen = false, bodyOpen = false;
@@ -476,6 +535,8 @@ private:
     std::array<Voice, kMaxVoices> voices;
     int64_t lastStep = INT64_MIN, pendingStep = 0;
     int pendingOffset = -1, cursor = 0, lastRandom = -1, stepCount = 0;
+    bool jumped = false;
+    int64_t sinceFire = int64_t (1) << 40;      // samples since a step last fired
     double stepSamples = 12000.0;
 
     Smooth sOn;

@@ -82,7 +82,7 @@ public:
         for (auto& f : tone) f.reset();
         for (auto& f : bump) f.reset();
         wAbs = 0; stAbs = 0;
-        hopCount = 0; nextGrain = 0; lastExtra = 0;
+        hopCount = 0; nextGrain = 0; walkRange = 0;
         // Start as if the grain engine had always been running: three older grains are
         // already part-way through their windows, so the overlap sums to one from the
         // first sample and the first note after a reset keeps its full attack.
@@ -355,13 +355,23 @@ private:
         // away from neutral.
         int extra = 0;
         if (! neutral)
+        {
             extra = ref != nullptr ? alignmentOffset (ref->pos, double (wAbs - 1) - lag, alignLen) : 0;
-        else if (lastExtra > 0 && ref != nullptr)
-            // Back at neutral, but earlier grains still carry an alignment offset: walk it down
-            // in phase-aligned steps (at most 3/4 of the previous offset) until it is zero and
-            // the path is an exact delay again.
-            extra = alignmentOffset (ref->pos, double (wAbs - 1) - lag, (lastExtra * 3) / 4);
-        lastExtra = extra;
+            walkRange = alignLen;
+        }
+        else if (walkRange > 0 && ref != nullptr)
+        {
+            // Back at neutral, but earlier grains are still detuned or carry an alignment
+            // offset: walk back to the exact delay. Each step is scored against the previous
+            // grain AND against the un-offset position it is heading for, so the phase turns
+            // the short way towards the dry signal instead of rotating through anti-phase
+            // (which would cancel at 50 % mix). The first step may search the full range; after
+            // that the offset shrinks by at least a quarter per grain, so the walk always ends.
+            extra = alignmentOffset (ref->pos, double (wAbs - 1) - lag, walkRange, true);
+            walkRange = (extra * 3) / 4;
+        }
+        else
+            walkRange = 0;
         lag += double (extra);
 
         g.active = true;
@@ -375,7 +385,9 @@ private:
     // Returns how many samples further back (0 .. maxOffset) the new grain should start.
     // Both comparison windows END at the grains' read positions, so only audio that has
     // already been written is ever looked at.
-    int alignmentOffset (double refPos, double newPos, int maxOffset) const
+    // With towardZero the target is the sum of the previous grain's window and the window at
+    // offset 0: for a periodic signal the best match then lies half-way (in phase) between them.
+    int alignmentOffset (double refPos, double newPos, int maxOffset, bool towardZero = false) const
     {
         if (maxOffset <= 0)
             return 0;
@@ -387,7 +399,9 @@ private:
             float corr = 0.0f, energy = 1.0e-9f;
             for (int j = 0; j < alignLen; j += alignStride)
             {
-                const float a = cap[0].atAbs (a0 + j) + cap[1].atAbs (a0 + j);
+                float a = cap[0].atAbs (a0 + j) + cap[1].atAbs (a0 + j);
+                if (towardZero)
+                    a += cap[0].atAbs (b0 + j) + cap[1].atAbs (b0 + j);
                 const float b = cap[0].atAbs (b0 - d + j) + cap[1].atAbs (b0 - d + j);
                 corr += a * b;
                 energy += b * b;
@@ -532,7 +546,7 @@ private:
     Ramp rDrop, rMix;
 
     StutterState st;
-    int lastGrid = -1, fadeLen = 144, alignLen = 576, alignStride = 3, lastExtra = 0;
+    int lastGrid = -1, fadeLen = 144, alignLen = 576, alignStride = 3, walkRange = 0;
 
     Smooth sOn, sMix, sDrive, sAge, sWowDepth, sFlutDepth;
     bool first = true;
