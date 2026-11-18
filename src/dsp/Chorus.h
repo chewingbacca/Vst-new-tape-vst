@@ -35,6 +35,18 @@ public:
         tickRate = sr / 32.0f;
         for (auto& d : dl) d.prepare (int (0.070f * sr));
 
+        sMix.setTime (0.03f, tickRate);
+        sGlass.setTime (0.15f, tickRate);
+        sWidth.setTime (0.05f, tickRate);
+        sXover.setTime (0.05f, tickRate);
+        sRate.setTime (0.1f, tickRate);
+        sDepth.setTime (0.1f, tickRate);
+        voiceCoef = 1.0f - std::exp (-1.0f / (0.04f * tickRate));
+        reset();
+    }
+
+    void reset()
+    {
         for (int i = 0; i < kMaxVoices; ++i)
         {
             Voice& v = voices[size_t (i)];
@@ -50,18 +62,6 @@ public:
             v.gain = 0.0f;
         }
 
-        sMix.setTime (0.03f, tickRate);
-        sGlass.setTime (0.15f, tickRate);
-        sWidth.setTime (0.05f, tickRate);
-        sXover.setTime (0.05f, tickRate);
-        sRate.setTime (0.1f, tickRate);
-        sDepth.setTime (0.1f, tickRate);
-        voiceCoef = 1.0f - std::exp (-1.0f / (0.04f * tickRate));
-        reset();
-    }
-
-    void reset()
-    {
         for (auto& d : dl) d.clear();
         for (auto& f : xo1) f.reset();
         for (auto& f : xo2) f.reset();
@@ -90,8 +90,8 @@ public:
 
         for (int c2 = 0; c2 < 2; ++c2)
         {
-            xo1[c2].setCutoff (xover, sr);
-            xo2[c2].setCutoff (xover, sr);
+            xo1[c2].set (xover, 0.7071f, sr);
+            xo2[c2].set (xover, 0.7071f, sr);
             wetHp[c2].setCutoff (20.0f + 380.0f * glass, sr);
             wetShelf[c2].setHigh (4000.0f, 4.5f * glass, sr);
         }
@@ -163,8 +163,7 @@ public:
                 float x[2] = { l[i], r[i] };
                 for (int c = 0; c < 2; ++c)
                 {
-                    const float low = xo2[c].process (xo1[c].process (x[c]));
-                    dl[c].push (x[c] - low);
+                    dl[c].push (xo2[c].high (xo1[c].high (x[c])));
                 }
             }
             for (int k = 0; k < numRunning; ++k)
@@ -181,8 +180,10 @@ public:
             float x[2] = { l[i], r[i] }, low[2], high[2];
             for (int c = 0; c < 2; ++c)
             {
-                low[c] = xo2[c].process (xo1[c].process (x[c]));
-                high[c] = x[c] - low[c];
+                // 24 dB/oct high-pass feeds the chorus; the low band is the exact remainder,
+                // so with the chorus at 0 % the signal reconstructs perfectly
+                high[c] = xo2[c].high (xo1[c].high (x[c]));
+                low[c] = x[c] - high[c];
                 dl[c].push (high[c] + fbAmount * softClip (fb[c]));
             }
 
@@ -220,7 +221,7 @@ private:
 
     float sr = 48000.0f, tickRate = 1500.0f;
     Ring dl[2];
-    OnePoleLP xo1[2], xo2[2];
+    Svf xo1[2], xo2[2];
     OnePoleHP wetHp[2];
     Shelf1 wetShelf[2];
     std::array<Voice, kMaxVoices> voices;

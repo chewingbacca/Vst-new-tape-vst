@@ -7,6 +7,7 @@
 // the engine delays the dry path by the same amount so dry and wet stay phase-coherent.
 #pragma once
 
+#include "Params.h"
 #include "Util.h"
 
 namespace verdant
@@ -58,12 +59,12 @@ public:
         sFlutDepth.setTime (0.1f, tickRate);
         for (auto& d : dc) d.prepare (sr);
 
-        rng.seed (0x7A9E11u);
         reset();
     }
 
     void reset()
     {
+        rng.seed (0x7A9E11u);
         for (auto& c : cap) c.clear();
         for (auto& w : wowBuf) w.clear();
         for (auto& s : stBuf) s.clear();
@@ -74,6 +75,18 @@ public:
         for (auto& f : bump) f.reset();
         wAbs = 0; stAbs = 0;
         hopCount = 0; nextGrain = 0;
+        // Start as if the grain engine had always been running: three older grains are
+        // already part-way through their windows, so the overlap sums to one from the
+        // first sample and the first note after a reset keeps its full attack.
+        for (int k = 0; k < 3; ++k)
+        {
+            Grain& g = grains[size_t (k)];
+            g.active = true; g.unity = true; g.rate = 1.0f;
+            g.phInc = 1.0f / float (grainLen);
+            g.ph = 0.25f * float (3 - k);
+            g.pos = -double (kGrainLag);
+        }
+        nextGrain = 3;
         lagStretch = 0.0; lastCycle = -1;
         wowPh = 0.11f; wowPh2 = 0.53f; flPh[0] = 0.0f; flPh[1] = 0.31f; flPh[2] = 0.67f;
         wowNoise = wowNoiseT = 0.0f; flNoise[0] = flNoise[1] = 0.0f;
@@ -152,17 +165,7 @@ public:
         // ---- saturation
         satPre  = lerp (0.5f, 5.0f, drive * drive);
         satPost = (1.0f + 0.6f * drive) / satPre;
-        satBias = 0.10f * drive;
-        if (first)
-        {
-            // start the saturator and DC blocker in their steady state so there is no thump at t = 0
-            for (int ch = 0; ch < 2; ++ch)
-            {
-                sat[ch].prime (double (satBias));
-                dc[ch].x1 = std::tanh (satBias) * satPost;
-                dc[ch].y1 = 0.0f;
-            }
-        }
+        satEven = 0.30f * drive;      // asymmetry -> even harmonics; vanishes at silence (no DC bias)
 
         // ---- age: tone, head bump, dropouts
         const float fc = 21000.0f * std::pow (0.15f, age);
@@ -249,7 +252,7 @@ public:
                 g.ph += g.phInc;
                 if (g.ph >= 1.0f) g.active = false;
             }
-            const float gGain = 0.5f * (1.0f + 0.3f * texture);
+            const float gGain = 0.5f;
             float y[2] = { g0 * gGain, g1 * gGain };
 
             const float drop = rDrop.next();
@@ -262,7 +265,8 @@ public:
                 float v = wowBuf[ch].tapHermite (rDelay[ch].next());
 
                 // ------------------------------------------ saturation
-                v = sat[ch].process (v * satPre + satBias) * satPost;
+                const float u = v * satPre;
+                v = sat[ch].process (u + satEven * u * u / (1.0f + u * u)) * satPost;
                 v = dc[ch].process (v);
 
                 // ------------------------------------------ age
@@ -300,20 +304,56 @@ private:
 
     void spawnGrain()
     {
+        const Grain* ref = nullptr;                 // the most recently started grain
+        {
+            const int prev = (nextGrain + int (grains.size()) - 1) % int (grains.size());
+            if (grains[size_t (prev)].active) ref = &grains[size_t (prev)];
+        }
         Grain& g = grains[size_t (nextGrain)];
         nextGrain = (nextGrain + 1) % int (grains.size());
 
         const float r = rate;
         double lag = double (kGrainLag) + double (std::max (0.0f, r - 1.0f)) * double (grainLen) + lagStretch;
-        if (texture > 0.0f)
-            lag += double (rng.uni() * texture * 0.004f * sr);
+        const bool unity = (r == 1.0f) && (lag == std::floor (lag)) && texture <= 0.0f;
+
+        // Waveform-similarity alignment (WSOLA, Verhelst & Roelands 1993): when the grains do
+        // not all read the same spot (varispeed or stretch), slide the new grain back by up to
+        // 12 ms to where it lines up best with what the previous grain is about to play. The
+        // overlaps then add in phase: a clean transposition instead of comb-filtered roughness.
+        if (! unity && ref != nullptr)
+            lag += double (alignmentOffset (ref->pos, double (wAbs - 1) - lag));
 
         g.active = true;
         g.rate = r;
         g.ph = 0.0f;
         g.phInc = 1.0f / float (grainLen);
         g.pos = double (wAbs - 1) - lag;
-        g.unity = (r == 1.0f) && (lag == std::floor (lag));
+        g.unity = unity;
+    }
+
+    // Returns how many samples further back (0 .. searchLen) the new grain should start.
+    int alignmentOffset (double refPos, double newPos) const
+    {
+        const int stride = std::max (1, int (sr / 24000.0f));          // work at about 24 kHz
+        const int corrLen = int (0.012f * sr), searchLen = int (0.012f * sr);
+        const int64_t a0 = int64_t (refPos), b0 = int64_t (newPos);
+
+        float bestScore = -1.0e30f;
+        int best = 0;
+        for (int d = 0; d <= searchLen; d += stride)
+        {
+            float corr = 0.0f, energy = 1.0e-9f;
+            for (int j = 0; j < corrLen; j += stride)
+            {
+                const float a = cap[0].atAbs (a0 + j) + cap[1].atAbs (a0 + j);
+                const float b = cap[0].atAbs (b0 - d + j) + cap[1].atAbs (b0 - d + j);
+                corr += a * b;
+                energy += b * b;
+            }
+            const float score = corr / std::sqrt (energy);
+            if (score > bestScore) { bestScore = score; best = d; }
+        }
+        return best;
     }
 
     //==============================================================================
@@ -423,7 +463,7 @@ private:
 
     AdaaTanh sat[2];
     DcBlocker dc[2];
-    float satPre = 1.0f, satPost = 1.0f, satBias = 0.0f;
+    float satPre = 1.0f, satPost = 1.0f, satEven = 0.0f;
 
     Svf tone[2];
     Shelf1 bump[2];

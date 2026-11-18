@@ -16,12 +16,13 @@ public:
     {
         tickRate = tickRate_;
         baseHz = baseHz_;
-        rng.seed (seed);
+        seedValue = seed;
         reset();
     }
 
     void reset()
     {
+        rng.seed (seedValue);
         ph1 = rng.uni(); ph2 = rng.uni();
         walkTarget = rng.bi(); walk1 = walk2 = walkTarget * 0.5f;
         countdown = 0.0f;
@@ -54,6 +55,7 @@ public:
 
 private:
     Rng rng;
+    uint32_t seedValue = 1;
     float tickRate = 1500.0f, baseHz = 0.1f;
     float ph1 = 0, ph2 = 0, walkTarget = 0, walk1 = 0, walk2 = 0, countdown = 0, value = 0;
 };

@@ -43,12 +43,12 @@ public:
         sNorm.setTime (0.08f, tickRate);
         sOn.setTime (0.03f, tickRate);
         minOffset = 40.0;
-        rng.seed (0x51A7B0u);
         reset();
     }
 
     void reset()
     {
+        rng.seed (0x51A7B0u);
         cap.clear();
         fbRing.clear();
         fbHp.reset(); fbLp.reset();

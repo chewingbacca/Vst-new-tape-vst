@@ -81,12 +81,12 @@ public:
         hangSamples = int (0.08f * sr);
         peakDecay = std::pow (0.5f, 1.0f / (4.0f * sr));
         sOn.setTime (0.03f, tickRate);
-        rng.seed (0xA4B0u);
         reset();
     }
 
     void reset()
     {
+        rng.seed (0xA4B0u);
         recA.clear(); recB.clear();
         lpA.reset(); lpB.reset(); recHp.reset();
         tracker.reset();

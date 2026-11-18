@@ -101,7 +101,6 @@ public:
             apLen[i] = std::max (8, int ((9.1f + 1.87f * float (i)) * 0.001f * sr));
             ap[i].prepare (apLen[i] + 4);
             lfoRate[i] = 0.071f + 0.043f * float ((i * 7) % N);
-            lfoPhase[i] = float ((i * 11) % N) / float (N);
         }
         static constexpr float inApMs[2][4] = { { 4.31f, 7.73f, 11.83f, 17.27f }, { 5.03f, 8.57f, 13.19f, 19.01f } };
         for (int c = 0; c < 2; ++c)
@@ -127,14 +126,15 @@ public:
         sDamp.setTime (0.06f, tickRate);
         sLow.setTime (0.06f, tickRate);
         energySmooth = 1.0f - std::exp (-1.0f / (0.05f * tickRate));
-        rng.seed (0xFDA016u);
         reset();
     }
 
     void reset()
     {
+        rng.seed (0xFDA016u);
         for (int i = 0; i < N; ++i)
         {
+            lfoPhase[i] = float ((i * 11) % N) / float (N);
             line[i].clear(); ap[i].clear();
             lpState[i] = 0.0f; lowState[i] = 0.0f;
             wander[i] = 0.0f; wanderTarget[i] = 0.0f;

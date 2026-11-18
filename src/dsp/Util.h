@@ -235,7 +235,7 @@ public:
         mask = n - 1;
         w = 0;
     }
-    void clear() { std::fill (buf.begin(), buf.end(), 0.0f); }
+    void clear() { std::fill (buf.begin(), buf.end(), 0.0f); w = 0; }
     int  size() const { return mask + 1; }
     int  writePos() const { return w; }
 
