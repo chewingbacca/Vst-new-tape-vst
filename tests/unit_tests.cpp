@@ -401,6 +401,28 @@ TEST (tape_neutral_is_a_pure_delay)
     }
 }
 
+TEST (tape_speed_up_is_band_limited)
+{
+    // +12 st turns 15 kHz into 30 kHz, which would alias to 18 kHz at 48 kHz.
+    const float sr = 48000.0f;
+    const int N = int (sr) * 2;
+    auto outRms = [&] (float hz)
+    {
+        Tape t;
+        t.prepare (sr);
+        Tape::Controls c;
+        c.wow = c.flutter = c.drive = c.age = 0.0f; c.speedSemis = 12.0f;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * hz * float (i) / sr);
+        runBlocks (N, [&] (int pos) { c.beat = double (pos) / 24000.0; t.control (c); },
+                   [&] (int pos, int n) { t.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        return rmsOf (oL.data() + N / 2, N / 2);
+    };
+    const double ok = outRms (5000.0f), aliasing = outRms (15000.0f);
+    CHECK (ok > 0.1);
+    CHECK (20.0 * std::log10 (aliasing / ok) < -20.0);
+}
+
 TEST (tape_speed_transposes_and_stretch_stays_bounded)
 {
     const float sr = 48000.0f;

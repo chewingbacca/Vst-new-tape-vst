@@ -43,6 +43,8 @@ public:
 
         wowBase = int (std::lround (0.003f * sr));
         for (auto& w : wowBuf) w.prepare (wowBase * 2 + 64);
+        for (auto& c : cleanBuf) c.prepare (kGrainLag + wowBase + 16);
+        sAA.setTime (0.05f, tickRate);
 
         const int stLen = int (3.2f * sr);
         for (auto& s : stBuf) s.prepare (stLen);
@@ -66,6 +68,9 @@ public:
     {
         rng.seed (0x7A9E11u);
         for (auto& c : cap) c.clear();
+        for (auto& c : cleanBuf) c.clear();
+        for (int ch = 0; ch < 2; ++ch) { aa1[ch].reset(); aa2[ch].reset(); }
+        rAA.snap (0.0f);
         for (auto& w : wowBuf) w.clear();
         for (auto& s : stBuf) s.clear();
         for (auto& g : grains) g.active = false;
@@ -131,6 +136,18 @@ public:
         rate = std::abs (c.speedSemis) < 0.005f ? 1.0f : semitonesToRatio (clampf (c.speedSemis, -12.0f, 12.0f));
         stretch = clampf (c.stretch, 1.0f, 8.0f);
         texture = clampf (std::abs (rate - 1.0f) * 4.0f + (stretch - 1.0f), 0.0f, 1.0f);
+
+        // Speeding up reads the tape faster than it was written; band-limit what is recorded
+        // (4th-order Butterworth at 0.42 fs / ratio) so nothing folds back as aliasing.
+        sAA.set (rate > 1.02f ? 1.0f : 0.0f);
+        if (first) sAA.snap (sAA.target);
+        const float aaFc = 0.42f * sr / std::max (1.0f, rate);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            aa1[ch].set (aaFc, 0.5412f, sr);
+            aa2[ch].set (aaFc, 1.3066f, sr);
+        }
+        rAA.begin (sAA.tick(), 32);
 
         // stretch cycle: the head snaps back to "now" once per bar
         const int cycle = int (std::floor ((c.beat + 1.0e-7) / 4.0));
@@ -215,8 +232,14 @@ public:
 
         for (int i = 0; i < n; ++i)
         {
-            cap[0].push (in[0][i]);
-            cap[1].push (in[1][i]);
+            const float aa = rAA.next();
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float x = in[ch][i];
+                cleanBuf[ch].push (x);
+                const float lp = aa2[ch].low (aa1[ch].low (x));
+                cap[ch].push (x + (lp - x) * aa);
+            }
             ++wAbs;
 
             // ---------------------------------------------- granular varispeed / stretch
@@ -283,7 +306,7 @@ public:
             const int nd = nominalDelay();
             for (int ch = 0; ch < 2; ++ch)
             {
-                const float clean = cap[ch].tap (nd);
+                const float clean = cleanBuf[ch].tap (nd);
                 out[ch][i] = clean + (y[ch] - clean) * mix;
             }
         }
@@ -448,7 +471,10 @@ private:
     Controls ctl;
     Rng rng;
 
-    Ring cap[2], wowBuf[2], stBuf[2];
+    Ring cap[2], cleanBuf[2], wowBuf[2], stBuf[2];
+    Svf aa1[2], aa2[2];
+    Smooth sAA;
+    Ramp rAA;
     int64_t wAbs = 0, stAbs = 0;
 
     std::array<Grain, 8> grains;
