@@ -146,7 +146,7 @@ public:
             }
         }
         stepSamples = stepBeats * c.samplesPerBeat;
-        trackOn = c.on && c.track;
+        trackOn = c.on;     // the tracker always listens while the module is on (it also feeds the UI read-out)
     }
 
     // outL/outR receive the arp voices (overwritten).

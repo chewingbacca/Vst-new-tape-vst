@@ -52,7 +52,12 @@ public:
     bool saveUserPreset (const juce::String& name);
     bool deleteUserPreset (const PresetInfo&);
     void applyValues (const verdant::ParamValues&);
-    juce::String getCurrentPresetName() const { return currentPresetName; }
+    // Guarded: hosts may restore state from a background thread while the editor reads the name.
+    juce::String getCurrentPresetName() const
+    {
+        const juce::ScopedLock sl (presetNameLock);
+        return currentPresetName;
+    }
     static juce::File getUserPresetDirectory();
 
     //==============================================================================
@@ -72,6 +77,13 @@ private:
     juce::AudioParameterBool* bypassParam = nullptr;
 
     int currentProgram = 0;
+    void setCurrentPresetName (const juce::String& name)
+    {
+        const juce::ScopedLock sl (presetNameLock);
+        currentPresetName = name;
+    }
+
+    juce::CriticalSection presetNameLock;
     juce::String currentPresetName;
     juce::AudioBuffer<float> scratch;
 

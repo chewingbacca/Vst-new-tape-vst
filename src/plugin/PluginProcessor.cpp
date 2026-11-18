@@ -91,7 +91,7 @@ VerdantProcessor::VerdantProcessor()
 
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (kParams[pBypass].id));
 
-    currentPresetName = factoryPresets().front().name;
+    setCurrentPresetName (factoryPresets().front().name);
     applyValues (factoryPresets().front().resolve());
 
     // Announce a plausible latency straight away; prepareToPlay() sets the exact value.
@@ -252,7 +252,7 @@ void VerdantProcessor::loadFactoryPreset (int index)
         return;
 
     currentProgram = index;
-    currentPresetName = fp[size_t (index)].name;
+    setCurrentPresetName (fp[size_t (index)].name);
     applyValues (fp[size_t (index)].resolve());
 }
 
@@ -308,7 +308,7 @@ void VerdantProcessor::loadPreset (const PresetInfo& info)
                     values[idx] = juce::jlimit (kParams[idx].min, kParams[idx].max,
                                                 float (e->getDoubleAttribute ("value", double (kParams[idx].def))));
             }
-            currentPresetName = info.name;
+            setCurrentPresetName (info.name);
             applyValues (values);
         }
     }
@@ -339,7 +339,7 @@ bool VerdantProcessor::saveUserPreset (const juce::String& name)
     if (! xml.writeTo (dir.getChildFile (safe + ".verdant")))
         return false;
 
-    currentPresetName = safe;
+    setCurrentPresetName (safe);
     return true;
 }
 
@@ -352,7 +352,7 @@ bool VerdantProcessor::deleteUserPreset (const PresetInfo& info)
 void VerdantProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty ("presetName", currentPresetName, nullptr);
+    state.setProperty ("presetName", getCurrentPresetName(), nullptr);
     state.setProperty ("program", currentProgram, nullptr);
     state.setProperty ("editorWidth", editorWidth, nullptr);
     state.setProperty ("editorHeight", editorHeight, nullptr);
@@ -373,7 +373,7 @@ void VerdantProcessor::setStateInformation (const void* data, int sizeInBytes)
             if (! state.isValid())
                 return;
 
-            currentPresetName = state.getProperty ("presetName", currentPresetName).toString();
+            setCurrentPresetName (state.getProperty ("presetName", getCurrentPresetName()).toString());
             currentProgram = juce::jlimit (0, juce::jmax (0, getNumPrograms() - 1), int (state.getProperty ("program", 0)));
             editorWidth  = int (state.getProperty ("editorWidth", 0));
             editorHeight = int (state.getProperty ("editorHeight", 0));
