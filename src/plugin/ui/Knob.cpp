@@ -23,6 +23,155 @@ Knob::~Knob()
 {
     if (dragging)
         attachment.endGesture();
+
+    if (valueEditor != nullptr)
+    {
+        // no callbacks into a half-destroyed knob
+        valueEditor->onReturnKey = nullptr;
+        valueEditor->onEscapeKey = nullptr;
+        valueEditor->onFocusLost = nullptr;
+        valueEditor.reset();
+    }
+}
+
+//==============================================================================
+juce::Rectangle<int> Knob::valueFieldBounds() const
+{
+    const bool macro = style == Style::macro;
+    const auto value = cellLayout (macro).value;
+    const float w = juce::jmin (float (getWidth()) - 2.0f, ctx.px (macro ? 88.0f : 62.0f));
+    const float h = value.getHeight() + ctx.px (macro ? 8.0f : 6.0f);
+
+    return value.withSizeKeepingCentre (w, h).toNearestInt().constrainedWithin (getLocalBounds());
+}
+
+bool Knob::isOverValue (juce::Point<float> p) const
+{
+    return cellLayout (style == Style::macro).value.expanded (0.0f, ctx.px (3.0f)).contains (p);
+}
+
+void Knob::styleValueEditor()
+{
+    if (valueEditor == nullptr)
+        return;
+
+    const auto font = ctx.font (style == Style::macro ? Type::macroValue : Type::value);
+    valueEditor->setColour (juce::TextEditor::textColourId, col::text);
+    valueEditor->setColour (juce::TextEditor::backgroundColourId, col::well);
+    valueEditor->setColour (juce::TextEditor::outlineColourId, accent.withAlpha (0.75f));
+    valueEditor->setColour (juce::TextEditor::focusedOutlineColourId, accent.withAlpha (0.9f));
+    valueEditor->setColour (juce::TextEditor::highlightColourId, accent.withAlpha (0.32f));
+    valueEditor->setColour (juce::TextEditor::highlightedTextColourId, col::text);
+    valueEditor->setColour (juce::CaretComponent::caretColourId, accent);
+    valueEditor->setFont (font);
+    valueEditor->applyFontToAllText (font);
+    valueEditor->setBounds (valueFieldBounds());
+}
+
+void Knob::showValueEditor()
+{
+    if (dragging)
+    {
+        dragging = false;
+        attachment.endGesture();
+    }
+
+    if (valueEditor == nullptr)
+    {
+        valueEditor = std::make_unique<juce::TextEditor>();
+        valueEditor->setMultiLine (false);
+        valueEditor->setReturnKeyStartsNewLine (false);
+        valueEditor->setScrollbarsShown (false);
+        valueEditor->setPopupMenuEnabled (false);
+        valueEditor->setSelectAllWhenFocused (true);
+        valueEditor->setInputRestrictions (24);
+        valueEditor->setJustification (juce::Justification::centred);
+        valueEditor->setBorder ({});
+        valueEditor->setIndents (0, 0);
+        valueEditor->setTitle (def.name);
+
+        // All three arrive asynchronously from the field (see TextEditor::handleCommandMessage);
+        // the field itself is only hidden, never deleted, from inside them.
+        valueEditor->onReturnKey = [this] { hideValueEditor (true); };
+        valueEditor->onEscapeKey = [this] { hideValueEditor (false); };
+        valueEditor->onFocusLost = [this]
+        {
+            // a stale notification must not close a field that has been reopened since
+            if (editing && valueEditor != nullptr && ! valueEditor->hasKeyboardFocus (true))
+                hideValueEditor (false);
+        };
+
+        addChildComponent (*valueEditor);
+    }
+
+    editing = true;
+    styleValueEditor();
+    valueEditor->setText (param.getCurrentValueAsText(), false);
+    valueEditor->setVisible (true);
+    valueEditor->toFront (false);
+    valueEditor->selectAll();
+
+    if (isShowing())
+        valueEditor->grabKeyboardFocus();
+
+    ctx.setHover (this, def.name, &param, "Type a value, Return to apply, Esc to cancel");
+    repaint();
+}
+
+void Knob::hideValueEditor (bool commit)
+{
+    if (! editing)
+        return;
+
+    editing = false;
+
+    if (valueEditor != nullptr)
+    {
+        const auto text = valueEditor->getText();
+        valueEditor->setVisible (false);
+
+        if (commit)
+            commitValueText (text);
+    }
+
+    if (hovered)
+        showHelp();
+    else
+        ctx.clearHover (this);
+
+    repaint();
+}
+
+void Knob::setValueEditorText (const juce::String& text)
+{
+    if (editing && valueEditor != nullptr)
+        valueEditor->setText (text, false);
+}
+
+bool Knob::commitValueText (const juce::String& rawText)
+{
+    const auto text = rawText.trim();
+    if (text.isEmpty())
+        return false;
+
+    const float parsed = param.getValueForText (text);
+    if (! std::isfinite (parsed))
+        return false;
+
+    // Text without a single digit is only accepted if the parameter's parser makes
+    // something of it (e.g. "inf" for an infinite decay) rather than falling back to zero.
+    if (! text.containsAnyOf ("0123456789")
+        && std::abs (parsed - param.getValueForText ({})) < 1.0e-6f)
+        return false;
+
+    setFromNormalised (parsed, false);   // snaps, and wraps begin / end gesture
+    return true;
+}
+
+void Knob::resized()
+{
+    if (editing)
+        styleValueEditor();
 }
 
 //==============================================================================
@@ -57,6 +206,10 @@ void Knob::resetToDefault()
 void Knob::mouseDown (const juce::MouseEvent& e)
 {
     if (e.mods.isPopupMenu())
+        return;
+
+    // the second click of a double-click on the read-out opens the field: no gesture for it
+    if (e.getNumberOfClicks() > 1 && isOverValue (e.position))
         return;
 
     if (e.mods.isAltDown() || e.mods.isCommandDown())
@@ -98,9 +251,12 @@ void Knob::mouseUp (const juce::MouseEvent&)
     }
 }
 
-void Knob::mouseDoubleClick (const juce::MouseEvent&)
+void Knob::mouseDoubleClick (const juce::MouseEvent& e)
 {
-    resetToDefault();
+    if (isOverValue (e.position))
+        showValueEditor();
+    else
+        resetToDefault();
 }
 
 void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
@@ -273,9 +429,12 @@ void Knob::paint (juce::Graphics& g)
     g.drawFittedText (macro ? caption.toUpperCase() : caption, capArea.toNearestInt(),
                       juce::Justification::centred, 1, 0.72f);
 
-    g.setFont (valFont);
-    g.setColour (dragging ? accent.brighter (0.2f) : col::text.withAlpha (macro ? 0.95f : 0.88f));
-    g.drawFittedText (param.getCurrentValueAsText(), valArea.toNearestInt(), juce::Justification::centred, 1, 0.72f);
+    if (! editing)   // the inline field covers the read-out while typing
+    {
+        g.setFont (valFont);
+        g.setColour (dragging ? accent.brighter (0.2f) : col::text.withAlpha (macro ? 0.95f : 0.88f));
+        g.drawFittedText (param.getCurrentValueAsText(), valArea.toNearestInt(), juce::Justification::centred, 1, 0.72f);
+    }
 }
 
 } // namespace verdant::ui

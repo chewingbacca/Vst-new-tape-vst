@@ -3,8 +3,9 @@
 //   input -> granular varispeed / time-stretch -> wow & flutter delay -> saturation
 //         -> age (tone, head bump, dropouts) -> stutter / repeat -> mix with clean
 //
-// With every control neutral the module is a pure delay of nominalDelay() samples;
-// the engine delays the dry path by the same amount so dry and wet stay phase-coherent.
+// With every control neutral the module is a delay of nominalDelay() samples (plus only the
+// gentle Drive-0 curve, the 21 kHz tone filter and the 8 Hz DC blocker); the engine delays
+// the dry path by the same amount so dry and wet stay phase-coherent.
 #pragma once
 
 #include "Params.h"
@@ -52,6 +53,8 @@ public:
         grainLen = int (0.100f * sr) & ~3;      // multiple of 4 so hop is exact
         hop = grainLen / 4;
         fadeLen = std::max (8, int (0.003f * sr));
+        alignLen = int (0.012f * sr);
+        alignStride = std::max (1, int (std::lround (sr / 16000.0f)));
 
         sOn.setTime (0.03f, tickRate);
         sMix.setTime (0.03f, tickRate);
@@ -153,7 +156,7 @@ public:
         const int cycle = int (std::floor ((c.beat + 1.0e-7) / 4.0));
         if (cycle != lastCycle) { lastCycle = cycle; lagStretch = 0.0; }
         if (stretch <= 1.001f) lagStretch = 0.0;
-        maxStretchLag = double (7.0f * sr) - double (grainLen) * 2.5;
+        maxStretchLag = double (7.0f * sr) - double (grainLen) * 2.5 - 2.0 * double (alignLen);
 
         // ---- wow & flutter (control-rate LFOs, per-sample ramps)
         const float dt = 1.0f / tickRate;
@@ -343,8 +346,13 @@ private:
         // not all read the same spot (varispeed or stretch), slide the new grain back by up to
         // 12 ms to where it lines up best with what the previous grain is about to play. The
         // overlaps then add in phase: a clean transposition instead of comb-filtered roughness.
-        if (! unity && ref != nullptr)
-            lag += double (alignmentOffset (ref->pos, double (wAbs - 1) - lag));
+        if (! unity)
+        {
+            // keep the whole comparison window behind the write head (never read unwritten data)
+            lag += double (alignLen);
+            if (ref != nullptr)
+                lag += double (alignmentOffset (ref->pos, double (wAbs - 1) - lag));
+        }
 
         g.active = true;
         g.rate = r;
@@ -354,27 +362,46 @@ private:
         g.unity = unity;
     }
 
-    // Returns how many samples further back (0 .. searchLen) the new grain should start.
+    // Returns how many samples further back (0 .. alignLen) the new grain should start.
     int alignmentOffset (double refPos, double newPos) const
     {
-        const int stride = std::max (1, int (sr / 24000.0f));          // work at about 24 kHz
-        const int corrLen = int (0.012f * sr), searchLen = int (0.012f * sr);
+        const int64_t newest = wAbs - 1;
         const int64_t a0 = int64_t (refPos), b0 = int64_t (newPos);
 
-        float bestScore = -1.0e30f;
-        int best = 0;
-        for (int d = 0; d <= searchLen; d += stride)
+        // Only written samples may be compared. The candidate window always is (the caller
+        // added alignLen of lag); the reference grain can be closer to the head (e.g. it was a
+        // neutral grain), in which case the comparison is shortened or skipped.
+        const int corrLen = int (std::min<int64_t> (alignLen, std::min (newest - a0, newest - b0)));
+        if (corrLen < alignLen / 4)
+            return 0;
+
+        auto score = [&] (int d)
         {
             float corr = 0.0f, energy = 1.0e-9f;
-            for (int j = 0; j < corrLen; j += stride)
+            for (int j = 0; j < corrLen; j += alignStride)
             {
                 const float a = cap[0].atAbs (a0 + j) + cap[1].atAbs (a0 + j);
                 const float b = cap[0].atAbs (b0 - d + j) + cap[1].atAbs (b0 - d + j);
                 corr += a * b;
                 energy += b * b;
             }
-            const float score = corr / std::sqrt (energy);
-            if (score > bestScore) { bestScore = score; best = d; }
+            return corr / std::sqrt (energy);
+        };
+
+        // coarse search on a ~16 kHz grid, then refine around the winner at full resolution
+        float bestScore = -1.0e30f;
+        int best = 0;
+        for (int d = 0; d <= alignLen; d += alignStride)
+        {
+            const float sc = score (d);
+            if (sc > bestScore) { bestScore = sc; best = d; }
+        }
+        const int lo = std::max (0, best - alignStride + 1), hi = std::min (alignLen, best + alignStride - 1);
+        for (int d = lo; d <= hi; ++d)
+        {
+            if (d == best) continue;
+            const float sc = score (d);
+            if (sc > bestScore) { bestScore = sc; best = d; }
         }
         return best;
     }
@@ -498,7 +525,7 @@ private:
     Ramp rDrop, rMix;
 
     StutterState st;
-    int lastGrid = -1, fadeLen = 144;
+    int lastGrid = -1, fadeLen = 144, alignLen = 576, alignStride = 3;
 
     Smooth sOn, sMix, sDrive, sAge, sWowDepth, sFlutDepth;
     bool first = true;

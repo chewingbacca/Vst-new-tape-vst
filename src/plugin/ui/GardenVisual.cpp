@@ -279,7 +279,22 @@ void GardenVisual::advance (float dt)
         swayPhase -= 4096.0f * std::floor (swayPhase / 4096.0f);
 
     updateParticles (dt);
-    repaint();
+
+    // Frame-rate governor: keep the visual's share of one core bounded. At normal sizes a
+    // paint takes ~3 ms and every tick repaints; at 2x scale or very large windows it thins
+    // out to as little as every other tick. The motion itself is unaffected.
+    repaintCredit += getRepaintRate() / kNominalFps;
+    if (repaintCredit >= 1.0f)
+    {
+        repaintCredit = juce::jmin (repaintCredit - 1.0f, 1.0f);
+        repaint();
+    }
+}
+
+float GardenVisual::getRepaintRate() const noexcept
+{
+    return paintCostMs <= kPaintBudgetMs ? kNominalFps
+                                         : juce::jlimit (kMinFps, kNominalFps, kNominalFps * kPaintBudgetMs / paintCostMs);
 }
 
 //==============================================================================
@@ -869,6 +884,7 @@ void GardenVisual::paint (juce::Graphics& g)
     stats.averageMs = (stats.averageMs * double (stats.frames) + elapsed) / double (stats.frames + 1);
     ++stats.frames;
     samples[size_t (sampleCount++ % int (samples.size()))] = float (elapsed);
+    paintCostMs += 0.08f * (float (elapsed) - paintCostMs);
 }
 
 } // namespace verdant::ui

@@ -10,6 +10,9 @@
 //   --fake-presets N     add N fake presets to the overlay (to test scrolling)
 //   --choices ID         open the choice list of parameter ID (e.g. scale)
 //   --help-for ID        show parameter ID in the help line (as if hovered)
+//   --value-entry ID[=TEXT]  open the typed value field of knob ID (repeatable), optionally with TEXT in it
+//   --commit-entry       press Return in the open value fields before the snapshot
+//   --scale S            render at desktop scale S (HiDPI): snapshot and timing use S device pixels per point
 //   --set ID=VALUE       set a parameter to a plain value (repeatable)
 //   --frames N           animation frames to run before the snapshot (default 150)
 //   --seq N              also write N consecutive frames NAME_000.png ... (animation check)
@@ -38,7 +41,9 @@ struct Options
 {
     juce::File outDir = juce::File::getCurrentWorkingDirectory();
     juce::String name, page = "garden", choices, helpFor, savePreset;
-    juce::StringArray sets;
+    juce::StringArray sets, valueEntries;
+    float scale = 1.0f;
+    bool commitEntry = false;
     int width = 1000, frames = 150, seq = 0, fakePresets = 0, bench = 200;
     float level = 0.7f;
     double audioSeconds = 0.0;
@@ -65,6 +70,9 @@ Options parse (const juce::StringArray& args)
         else if (a == "--choices")       o.choices = next();
         else if (a == "--help-for")      o.helpFor = next();
         else if (a == "--set")           o.sets.add (next());
+        else if (a == "--value-entry")   o.valueEntries.add (next());
+        else if (a == "--commit-entry")  o.commitEntry = true;
+        else if (a == "--scale")         o.scale = juce::jlimit (0.5f, 4.0f, next().getFloatValue());
         else if (a == "--frames")        o.frames = next().getIntValue();
         else if (a == "--seq")           o.seq = next().getIntValue();
         else if (a == "--level")         o.level = next().getFloatValue();
@@ -161,6 +169,9 @@ struct StressDriver final : public juce::Timer
         if (ticks % 7 == 0)   editor.setPage (ticks / 7 % 2);
         if (ticks % 11 == 0)  editor.setPresetBrowserOpen ((ticks / 11) % 2 == 0);
         if (ticks % 13 == 0)  editor.debugOpenChoiceList (ticks % 2 == 0 ? verdant::pScale : verdant::pKey);
+        if (ticks % 5 == 0)   editor.debugOpenValueEntry (ticks % 2 == 0 ? verdant::pBloom : verdant::pRevDecay,
+                                                          ticks % 3 == 0 ? "42" : (ticks % 3 == 1 ? "inf" : "nonsense"));
+        if (ticks % 5 == 3)   editor.debugCloseValueEntries (ticks % 2 == 0);
         if (ticks % 17 == 0)  editor.setSize (750 + (ticks * 37) % 900, juce::roundToInt ((750 + (ticks * 37) % 900) * 0.66));
 
         if (juce::Time::getMillisecondCounterHiRes() >= endTime)
@@ -349,11 +360,30 @@ int main (int argc, char* argv[])
                 std::fprintf (stderr, "unknown parameter id: %s\n", options.helpFor.toRawUTF8());
         }
 
-        const auto snapshot = [&] { return editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f); };
+        for (const auto& entry : options.valueEntries)
+        {
+            const auto id = entry.upToFirstOccurrenceOf ("=", false, false).trim();
+            const int index = verdant::findParam (id.toRawUTF8());
+
+            if (index < 0 || ! editor->debugOpenValueEntry (verdant::PID (index), entry.fromFirstOccurrenceOf ("=", false, false)))
+                std::fprintf (stderr, "no visible knob for '%s'\n", id.toRawUTF8());
+        }
+
+        if (options.commitEntry)
+        {
+            editor->debugCloseValueEntries (true);
+
+            for (const auto& entry : options.valueEntries)
+                if (auto* p = processor->apvts.getParameter (entry.upToFirstOccurrenceOf ("=", false, false).trim()))
+                    std::printf ("%s is now %s\n", p->getName (64).toRawUTF8(), p->getCurrentValueAsText().toRawUTF8());
+        }
+
+        const float scale = options.scale;
+        const auto snapshot = [&] { return editor->createComponentSnapshot (editor->getLocalBounds(), true, scale); };
 
         const auto file = options.outDir.getChildFile (options.name + ".png");
         if (writePng (snapshot(), file))
-            std::printf ("wrote %s (%d x %d)\n", file.getFullPathName().toRawUTF8(), editor->getWidth(), editor->getHeight());
+            std::printf ("wrote %s (%d x %d at scale %.2f)\n", file.getFullPathName().toRawUTF8(), editor->getWidth(), editor->getHeight(), double (scale));
         else
         {
             std::fprintf (stderr, "failed to write %s\n", file.getFullPathName().toRawUTF8());
@@ -373,25 +403,32 @@ int main (int argc, char* argv[])
         if (options.bench > 0)
         {
             auto& visual = editor->getActiveVisual();
-            juce::Image target (juce::Image::RGB, juce::jmax (1, visual.getWidth()), juce::jmax (1, visual.getHeight()), true,
+            juce::Image target (juce::Image::RGB, juce::jmax (1, juce::roundToInt (std::ceil (float (visual.getWidth()) * scale))),
+                                juce::jmax (1, juce::roundToInt (std::ceil (float (visual.getHeight()) * scale))), true,
                                 juce::SoftwareImageType());
+
+            const auto paintVisual = [&]
+            {
+                juce::Graphics g (target);
+                g.addTransform (juce::AffineTransform::scale (scale));
+                visual.paintEntireComponent (g, false);
+            };
 
             for (int i = 0; i < 10; ++i)   // warm-up (caches, path storage)
             {
                 runFrames (1);
-                juce::Graphics g (target);
-                visual.paintEntireComponent (g, false);
+                paintVisual();
             }
 
             visual.resetPaintStats();
             for (int i = 0; i < options.bench; ++i)
             {
                 runFrames (1);
-                juce::Graphics g (target);
-                visual.paintEntireComponent (g, false);
+                paintVisual();
             }
 
             const auto stats = visual.getPaintStats();
+            const float repaintRate = visual.getRepaintRate();
 
             const double t0 = juce::Time::getMillisecondCounterHiRes();
             constexpr int fullFrames = 20;
@@ -402,8 +439,8 @@ int main (int argc, char* argv[])
             }
             const double fullMs = (juce::Time::getMillisecondCounterHiRes() - t0) / double (fullFrames);
 
-            std::printf ("visual %d x %d: paint median %.2f ms, avg %.2f, min %.2f, max %.2f over %d frames; whole editor repaint %.2f ms\n",
-                         visual.getWidth(), visual.getHeight(), stats.medianMs, stats.averageMs, stats.minMs, stats.maxMs, stats.frames, fullMs);
+            std::printf ("visual %d x %d at scale %.2f: paint median %.2f ms, avg %.2f, min %.2f, max %.2f over %d frames (repaint rate %.1f fps); whole editor repaint %.2f ms\n",
+                         visual.getWidth(), visual.getHeight(), double (scale), stats.medianMs, stats.averageMs, stats.minMs, stats.maxMs, stats.frames, double (repaintRate), fullMs);
         }
     }
 

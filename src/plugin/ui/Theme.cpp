@@ -190,10 +190,10 @@ void VerdantLookAndFeel::drawScrollbar (juce::Graphics& g, juce::ScrollBar&, int
     }
 }
 
-void VerdantLookAndFeel::fillTextEditorBackground (juce::Graphics& g, int width, int height, juce::TextEditor&)
+void VerdantLookAndFeel::fillTextEditorBackground (juce::Graphics& g, int width, int height, juce::TextEditor& ed)
 {
     const auto r = juce::Rectangle<int> (width, height).toFloat();
-    g.setColour (col::well);
+    g.setColour (ed.findColour (juce::TextEditor::backgroundColourId));
     g.fillRoundedRectangle (r, float (height) * 0.5f);
 }
 
@@ -201,7 +201,7 @@ void VerdantLookAndFeel::drawTextEditorOutline (juce::Graphics& g, int width, in
 {
     const auto r = juce::Rectangle<int> (width, height).toFloat().reduced (0.5f);
     const bool focused = ed.hasKeyboardFocus (true) && ! ed.isReadOnly();
-    g.setColour (focused ? col::leaf.withAlpha (0.6f) : col::hairline.withAlpha (0.2f));
+    g.setColour (ed.findColour (focused ? juce::TextEditor::focusedOutlineColourId : juce::TextEditor::outlineColourId));
     g.drawRoundedRectangle (r, float (height) * 0.5f, 1.0f);
 }
 

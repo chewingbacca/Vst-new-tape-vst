@@ -21,7 +21,12 @@ public:
     ~GardenVisual() override;
 
     // Steps the simulation (meters, parameters, particles) and requests a repaint.
+    // The simulation always runs at the caller's rate; repaints are thinned out when a
+    // paint is expensive (large window on a HiDPI display), see getRepaintRate().
     void advance (float dtSeconds);
+
+    // Current repaint rate in frames per second (30 unless painting is costly, never below 15).
+    float getRepaintRate() const noexcept;
 
     struct PaintStats { double lastMs = 0.0, averageMs = 0.0, medianMs = 0.0, minMs = 0.0, maxMs = 0.0; int frames = 0; };
     PaintStats getPaintStats() const;
@@ -165,6 +170,8 @@ private:
     std::array<std::array<juce::Path, 3>, 3> corePaths;     // [kind][alpha bucket]
 
     PaintStats stats;
+    float paintCostMs = 0.0f;               // smoothed paint time, drives the repaint rate
+    float repaintCredit = 1.0f;
     std::array<float, 256> samples {};      // recent paint times, for the median
     int sampleCount = 0;
 

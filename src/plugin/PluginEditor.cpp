@@ -18,23 +18,35 @@ namespace
         return juce::roundToInt (double (width) * double (kBaseHeight) / double (kBaseWidth));
     }
 
-    // First visible ChoicePill for a parameter, searching a component tree.
-    ChoicePill* findPill (juce::Component& root, PID pid)
+    // First visible control of type C for a parameter, searching a component tree.
+    template <typename C>
+    C* findControl (juce::Component& root, PID pid)
     {
         for (auto* child : root.getChildren())
         {
             if (! child->isVisible())
                 continue;
 
-            if (auto* pill = dynamic_cast<ChoicePill*> (child))
-                if (pill->getDef().pid == pid)
-                    return pill;
+            if (auto* control = dynamic_cast<C*> (child))
+                if (control->getDef().pid == pid)
+                    return control;
 
-            if (auto* found = findPill (*child, pid))
+            if (auto* found = findControl<C> (*child, pid))
                 return found;
         }
 
         return nullptr;
+    }
+
+    void closeValueEntries (juce::Component& root, bool commit)
+    {
+        for (auto* child : root.getChildren())
+        {
+            if (auto* knob = dynamic_cast<Knob*> (child))
+                knob->hideValueEditor (commit);
+
+            closeValueEntries (*child, commit);
+        }
     }
 }
 
@@ -123,6 +135,7 @@ void VerdantEditor::setPage (int newPage)
 {
     newPage = juce::jlimit (0, 1, newPage);
     choicePopup.dismiss();
+    closeValueEntries (*this, false);   // a half-typed value does not survive a page change
 
     page = newPage;
     proc.editorPage = page;
@@ -135,6 +148,7 @@ void VerdantEditor::setPage (int newPage)
 void VerdantEditor::setPresetBrowserOpen (bool shouldBeOpen)
 {
     choicePopup.dismiss();
+    closeValueEntries (*this, false);
 
     if (shouldBeOpen)
         browser.open();
@@ -276,13 +290,33 @@ void VerdantEditor::debugShowHelpFor (PID pid)
 
 bool VerdantEditor::debugOpenChoiceList (PID pid)
 {
-    if (auto* pill = findPill (*this, pid))
+    if (auto* pill = findControl<ChoicePill> (*this, pid))
     {
         ctx.showChoices (*pill);
         return true;
     }
 
     return false;
+}
+
+bool VerdantEditor::debugOpenValueEntry (PID pid, const juce::String& text)
+{
+    if (auto* knob = findControl<Knob> (*this, pid))
+    {
+        knob->showValueEditor();
+
+        if (text.isNotEmpty())
+            knob->setValueEditorText (text);
+
+        return true;
+    }
+
+    return false;
+}
+
+void VerdantEditor::debugCloseValueEntries (bool commit)
+{
+    closeValueEntries (*this, commit);
 }
 
 void VerdantEditor::debugSavePreset (const juce::String& name)

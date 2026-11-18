@@ -87,7 +87,7 @@ private:
     // ---- smoothed macro / global controls
     Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
     Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix, rArpDirect, rArpSend;
-    Smooth sGrainMix, sArpMix, sArpWash, sRevMix, sRevOn, sTilt;
+    Smooth sGrainMix, sArpMix, sArpWash, sRevMix, sRevOn, sTilt, sDrift;
     Ramp rRevDry, rRevWet, rRevOff;
 
     // ---- modules

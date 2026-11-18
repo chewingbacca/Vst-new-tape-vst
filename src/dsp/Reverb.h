@@ -38,8 +38,9 @@ public:
         buf.prepare (int (win * std::max (1.0f, maxRatio - 1.0f)) + 64);
         reset();
     }
-    void reset() { buf.clear(); ph = 0.0f; ratio[0] = ratio[1] = target; }
+    void reset() { buf.clear(); ph = 0.0f; target = 2.0f; ratio[0] = ratio[1] = target; }
     void setRatio (float r) { target = r; }
+    void snap() { ratio[0] = ratio[1] = target; }      // adopt the target immediately (first block after a reset)
 
     inline float process (float x)
     {
@@ -125,6 +126,8 @@ public:
         sT60.setTime (0.08f, tickRate);
         sDamp.setTime (0.06f, tickRate);
         sLow.setTime (0.06f, tickRate);
+        sInf.setTime (0.08f, tickRate);
+        flushTicks = int (0.45f * tickRate);        // longest pre-delay + input diffusers
         energySmooth = 1.0f - std::exp (-1.0f / (0.05f * tickRate));
         reset();
     }
@@ -148,6 +151,7 @@ public:
             outHp[c].reset();
         }
         energy = 0.0f; energyAcc = 0.0f; energyCount = 0;
+        offTicks = 0;
         first = true;
     }
 
@@ -160,21 +164,28 @@ public:
         sShim.set (clampf (c.shimmer, 0.0f, 1.0f));
         sDiff.set (clampf (c.diffusion, 0.0f, 1.0f));
         sMod.set (clampf (c.mod, 0.0f, 1.0f));
-        sT60.set (c.infinite ? kInfiniteT60 : clampf (c.decaySec, 0.1f, 200.0f));
+        // decay is smoothed in the log domain, and "infinite" is a smoothed amount, so jumping the
+        // Decay knob (even to or from Infinite) glides the line gains instead of stepping them
+        sT60.set (std::log (c.infinite ? kInfiniteT60 : clampf (c.decaySec, 0.1f, 200.0f)));
+        sInf.set (c.infinite ? 1.0f : 0.0f);
         sDamp.set (clampf (c.dampHz, 300.0f, 20000.0f));
         sLow.set (clampf (c.lowCutHz, 15.0f, 1500.0f));
         if (first)
-            for (auto* s : { &sOn, &sFreeze, &sScale, &sPre, &sShim, &sDiff, &sMod, &sT60, &sDamp, &sLow })
+            for (auto* s : { &sOn, &sFreeze, &sScale, &sPre, &sShim, &sDiff, &sMod, &sT60, &sDamp, &sLow, &sInf })
                 s->snap (s->target);
 
         const float on = sOn.tick(), frz = sFreeze.tick(), scale = sScale.tick(), preSamples = sPre.tick();
         const float shim = sShim.tick(), diff = sDiff.tick(), mod = sMod.tick();
-        float t60 = sT60.tick();
+        float t60 = std::exp (sT60.tick());
+        const float t60Smoothed = t60;
         const float damp = sDamp.tick(), lowCut = sLow.tick();
-        const bool infinite = t60 >= kInfiniteT60 * 0.99f;
+        const float inf = sInf.tick();
 
-        // tails ring out after the module is switched off; stop working once it is silent
-        active = on > 1.0e-4f || c.on || energy > 1.0e-9f;
+        // Tails ring out after the module is switched off. Processing stops only once the tank
+        // is silent AND the (input-gated) pre-delay and diffusers have been flushed with zeros,
+        // so switching the reverb back on can never replay stale audio.
+        offTicks = (c.on || on > 1.0e-4f) ? 0 : std::min (offTicks + 1, flushTicks);
+        active = c.on || on > 1.0e-4f || energy > 1.0e-9f || offTicks < flushTicks;
 
         // ---- tank-energy governor: a hot tank gets a progressively shorter decay
         energy += energySmooth * (energyAcc / float (std::max (1, energyCount)) - energy);
@@ -200,18 +211,21 @@ public:
             rDelay[i].begin (d, 32);
 
             const float loopSeconds = (base + float (apLen[i])) / sr;
-            float g = (infinite && over <= 0.0f) ? 1.0f : std::exp (-6.9078f * loopSeconds / t60);
-            g = lerp (g, 1.0f, frz);
-            if (over > 0.0f) g = std::min (g, std::exp (-6.9078f * loopSeconds / t60));
-            lineGain[i] = g;
+            const float gDecay = std::exp (-6.9078f * loopSeconds / t60);
+            float g = lerp (gDecay, 1.0f, std::max (inf, frz));      // exactly 1 when infinite / frozen
+            if (over > 0.0f) g = std::min (g, gDecay);               // the governor always wins
+            if (first) rGain[i].snap (g);
+            rGain[i].begin (g, 32);
         }
 
         // ---- damping (bypassed towards freeze; relaxed for an infinite tail)
-        const float dampHz = infinite ? std::max (damp, 9000.0f) : damp;
+        const float dampHz = std::exp (lerp (std::log (damp), std::log (std::max (damp, 9000.0f)), inf));
         lpCoef = lerp (1.0f - std::exp (-kTwoPi * std::min (dampHz, sr * 0.45f) / sr), 1.0f, frz);
         // gentle in-loop bass absorption below the low cut (none when infinite / frozen)
         lowCoef = 1.0f - std::exp (-kTwoPi * lowCut * 1.5f / sr);
-        lowAbsorb = (infinite ? 0.0f : 0.06f) * (1.0f - frz);
+        const float lowAbsorb = 0.06f * (1.0f - inf) * (1.0f - frz);
+        if (first) rLowAbsorb.snap (lowAbsorb);
+        rLowAbsorb.begin (lowAbsorb, 32);
 
         apGain = 0.2f + 0.45f * diff;
         inApGain = 0.25f + 0.5f * diff;
@@ -228,14 +242,15 @@ public:
         {
             const float r = ratios[sp][k];
             shifter[k].setRatio (r);
+            if (first) shifter[k].snap();
             shimLp[k].set (std::min (9000.0f, 0.42f * sr / std::max (1.0f, r)), 0.7f, sr);
         }
 
         for (auto& f : outHp) f.set (lowCut, 0.7f, sr);
 
         // ---- levels
-        const float inG = on * (1.0f - frz) * 0.35355339f;            // 1/sqrt(8) per line
-        const float t60Level = std::min (sT60.get(), 60.0f);
+        const float inG = on * (1.0f - frz);                          // gates what enters the pre-delay
+        const float t60Level = std::min (t60Smoothed, 60.0f);
         const float outG = 1.25f * clampf (std::pow (4.0f / t60Level, 0.3f), 0.45f, 1.6f) * 0.35355339f;
         const float earlyG = 0.22f * on * (1.0f - frz);
         if (first)
@@ -260,6 +275,8 @@ public:
                 rIn.next(); rOut.next(); rEarly.next(); rPre.next();
             }
             for (auto& r : rDelay) for (int i = 0; i < n; ++i) r.next();
+            for (auto& r : rGain)  for (int i = 0; i < n; ++i) r.next();
+            for (int i = 0; i < n; ++i) rLowAbsorb.next();
             return;
         }
 
@@ -269,8 +286,10 @@ public:
         for (int s = 0; s < n; ++s)
         {
             // ---- pre-delay + input diffusion
-            pre[0].push (inL[s]);
-            pre[1].push (inR[s]);
+            const float ig = rIn.next();
+            pre[0].push (inL[s] * ig);
+            pre[1].push (inR[s] * ig);
+            const float lowAbsorb = rLowAbsorb.next();
             const float pd = rPre.next();
             float x[2] = { pre[0].tapLinear (pd), pre[1].tapLinear (pd) };
             for (int c = 0; c < 2; ++c)
@@ -286,7 +305,7 @@ public:
                 v = lpState[i];
                 lowState[i] += lowCoef * (v - lowState[i]);              // bass absorption
                 v -= lowAbsorb * lowState[i];
-                f[i] = v * lineGain[i];
+                f[i] = v * rGain[i].next();
                 acc += f[i] * f[i];
             }
 
@@ -316,8 +335,7 @@ public:
             }
 
             // ---- inject input and write back
-            const float ig = rIn.next();
-            const float iL = x[0] * ig, iR = x[1] * ig;
+            const float iL = x[0] * 0.35355339f, iR = x[1] * 0.35355339f;      // 1/sqrt(8) per line
             for (int i = 0; i < N; i += 2)
             {
                 const float sg = kInSign[i >> 1];
@@ -377,9 +395,10 @@ private:
     Ring line[N], ap[N], pre[2], inAp[2][4];
     int apLen[N] = {}, inApLen[2][4] = {};
     float lfoRate[N] = {}, lfoPhase[N] = {}, wander[N] = {}, wanderTarget[N] = {};
-    float lpState[N] = {}, lowState[N] = {}, lineGain[N] = {};
-    Ramp rDelay[N], rIn, rOut, rEarly, rPre;
-    float lpCoef = 1.0f, lowCoef = 0.0f, lowAbsorb = 0.0f, apGain = 0.5f, inApGain = 0.5f;
+    float lpState[N] = {}, lowState[N] = {};
+    Ramp rDelay[N], rGain[N], rIn, rOut, rEarly, rPre, rLowAbsorb;
+    float lpCoef = 1.0f, lowCoef = 0.0f, apGain = 0.5f, inApGain = 0.5f;
+    int offTicks = 0, flushTicks = 600;
 
     DelayShifter shifter[2];
     OnePoleHP shimHp[2];
@@ -390,7 +409,7 @@ private:
     float energy = 0.0f, energyAcc = 0.0f, energySmooth = 0.1f;
     int energyCount = 0;
 
-    Smooth sScale, sPre, sFreeze, sOn, sShim, sDiff, sMod, sT60, sDamp, sLow;
+    Smooth sScale, sPre, sFreeze, sOn, sShim, sDiff, sMod, sT60, sDamp, sLow, sInf;
     bool first = true, active = true;
 };
 

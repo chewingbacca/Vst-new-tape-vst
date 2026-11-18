@@ -13,6 +13,9 @@ namespace verdant::ui::garden
 constexpr float kPi    = juce::MathConstants<float>::pi;
 constexpr float kTwoPi = juce::MathConstants<float>::twoPi;
 
+// repaint governor: full rate while a paint costs no more than the budget
+constexpr float kNominalFps = 30.0f, kMinFps = 15.0f, kPaintBudgetMs = 6.0f;
+
 // sprite sizes relative to the visual (kept small: blending them is a per-frame cost)
 constexpr float kSunRadius = 0.44f;
 constexpr float kHaloW = 0.27f, kHaloH = 0.52f;

@@ -38,6 +38,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sRevMix.setTime (0.04f, tickRate);
     sRevOn.setTime (0.03f, tickRate);
     sTilt.setTime (0.05f, tickRate);
+    sDrift.setTime (0.06f, tickRate);
 
     for (auto& h : ambHp) h.setCutoff (70.0f, sr);
     bandLo.setCutoff (250.0f, sr);
@@ -64,6 +65,7 @@ void Engine::reset()
     bandLo.reset(); bandHi.reset();
     for (auto& h : ambHp) h.reset();
     chunkPos = 0;
+    beat = 0.0;
     firstBlock = true;
     meterIn = meterOutL = meterOutR = meterWet = 0.0f;
     eLow = eMid = eHigh = 0.0f;
@@ -93,7 +95,9 @@ void Engine::controlTick()
 
     // ---- modulation sources
     const float growthRate = macroScale (growth, 0.2f, 5.0f);
-    const float driftDepth = p[pDrift] * macroScale (bloom, 0.5f, 1.5f);
+    sDrift.set (p[pDrift]);
+    if (firstBlock) sDrift.snap (sDrift.target);
+    const float driftDepth = sDrift.tick() * macroScale (bloom, 0.5f, 1.5f);
     for (int i = 0; i < 4; ++i)
     {
         driftVal[i] = drift[i].tick (growthRate) * driftDepth;
@@ -288,7 +292,7 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- bus: tape + cloud + direct arp; the arp "wash" goes straight to the reverb.
     // Ducking ("Clearing") turns the ambience down in what you hear, but the part that is
     // ducked away is still sent to the reverb, so the tail blooms at full strength afterwards.
-    float bL[kChunk], bR[kChunk], sL[kChunk], sR[kChunk];
+    float bL[kChunk], bR[kChunk], sL[kChunk], sR[kChunk], washL[kChunk], washR[kChunk];
     for (int i = 0; i < n; ++i)
     {
         const float gm = rGrainMix.next(), ad = rArpDirect.next(), as = rArpSend.next();
@@ -298,8 +302,10 @@ void Engine::processChunk (float* l, float* r, int n)
         const float d = duckG[i];
         bL[i] = tL[i] + d * ambL;
         bR[i] = tR[i] + d * ambR;
-        sL[i] = as * al + (1.0f - d) * ambL;
-        sR[i] = as * ar + (1.0f - d) * ambR;
+        washL[i] = as * al;
+        washR[i] = as * ar;
+        sL[i] = washL[i] + (1.0f - d) * ambL;
+        sR[i] = washR[i] + (1.0f - d) * ambR;
     }
 
     // ---- chorus
@@ -322,8 +328,8 @@ void Engine::processChunk (float* l, float* r, int n)
     {
         const float rd = rRevDry.next(), rw = rRevWet.next() * duckG[i], roff = rRevOff.next();
         // with the reverb switched off the arp wash is heard directly instead of vanishing
-        float wetL = (bL[i] + roff * duckG[i] * sL[i]) * rd + rvL[i] * rw;
-        float wetR = (bR[i] + roff * duckG[i] * sR[i]) * rd + rvR[i] * rw;
+        float wetL = (bL[i] + roff * duckG[i] * washL[i]) * rd + rvL[i] * rw;
+        float wetR = (bR[i] + roff * duckG[i] * washR[i]) * rd + rvR[i] * rw;
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));
@@ -364,7 +370,8 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
 {
     const ScopedNoDenormals noDenormals;
 
-    samplesPerBeat = 60.0 * double (sr) / std::max (20.0, transport.bpm);
+    // the real tempo, however slow: the clock must agree with the host's ppq at any block size
+    samplesPerBeat = 60.0 * double (sr) / std::clamp (transport.bpm, 1.0, 999.0);
     beatInc = 1.0 / samplesPerBeat;
     if (transport.playing)
         beat = transport.ppq;

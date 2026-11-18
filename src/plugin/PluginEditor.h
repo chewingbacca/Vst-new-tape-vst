@@ -49,6 +49,13 @@ public:
     // Opens the preset browser and saves the current settings as a user preset through the UI.
     void debugSavePreset (const juce::String& name);
 
+    // Typed value entry: opens the inline field of the first visible knob bound to `pid`
+    // (optionally replacing its text). Returns false if there is no such knob.
+    bool debugOpenValueEntry (verdant::PID, const juce::String& text = {});
+
+    // Closes every open value field, committing (Return) or cancelling (Escape).
+    void debugCloseValueEntries (bool commit);
+
     verdant::ui::GardenVisual& getActiveVisual();
 
 private:

@@ -36,9 +36,9 @@ public:
     {
         sr = sampleRate;
         tickRate = sr / 32.0f;
-        cap.prepare (int (8.3f * sr));
-        capA.prepare (int (8.3f * sr));
-        capB.prepare (int (8.3f * sr));
+        cap.prepare (int (9.3f * sr));
+        capA.prepare (int (9.3f * sr));
+        capB.prepare (int (9.3f * sr));
         // Grains transposed upwards read a band-limited copy (4th-order Butterworth), so even
         // a two-octave jump of bright material stays below Nyquist: no aliasing in the sparkle.
         //   ratio <= 1.3 : full band     ratio <= 2.2 : 0.20 fs     above : 0.11 fs
@@ -49,6 +49,7 @@ public:
         fbLp.setCutoff (6500.0f, sr);
         sNorm.setTime (0.08f, tickRate);
         sOn.setTime (0.03f, tickRate);
+        sFb.setTime (0.05f, tickRate);
         minOffset = 40.0;
         reset();
     }
@@ -65,7 +66,7 @@ public:
         wAbs = 0;
         untilNext = 0.0;
         numActive = 0;
-        first = true;
+        first = true; firstFb = true;
         spawnCount = 0;
         activity = 0.0f;
     }
@@ -88,7 +89,9 @@ public:
         if (first) { rGain.snap (g); first = false; }
         rGain.begin (g, 32);
         spawning = c.on;
-        fbGain = 0.72f * clampf (c.feedback, 0.0f, 1.0f) * on;
+        sFb.set (0.72f * clampf (c.feedback, 0.0f, 1.0f));
+        if (firstFb) { sFb.snap (sFb.target); rFb.snap (sFb.target * on); firstFb = false; }
+        rFb.begin (sFb.tick() * on, 32);
         activity = float (numActive) / 24.0f;
     }
 
@@ -99,12 +102,8 @@ public:
         for (int i = 0; i < n; ++i)
         {
             float x = 0.5f * (inL[i] + inR[i]);
-            if (fbGain > 0.0f)
-            {
-                float fb = fbRing.tap (31 - i);
-                fb = fbLp.process (fbHp.process (fb));
-                x += fbGain * softClip (fb);
-            }
+            const float fb = fbLp.process (fbHp.process (fbRing.tap (31 - i)));
+            x += rFb.next() * softClip (fb);
             cap.push (x);
             capA.push (aaA2.low (aaA1.low (x)));
             capB.push (aaB2.low (aaB1.low (x)));
@@ -113,51 +112,31 @@ public:
         }
         wAbs += n;
 
-        // ---- schedule new grains inside this block
-        if (spawning)
+        // ---- render. The block is cut at every spawn time, so a finished grain's slot is free
+        // on the exact sample it ends; the result is then independent of how the host slices blocks.
+        int pos = 0;
+        while (true)
         {
-            while (untilNext < double (n))
+            const bool spawnHere = spawning && untilNext < double (n);
+            const int segEnd = spawnHere ? std::max (pos, int (untilNext)) : n;
+            if (segEnd > pos)
             {
-                spawn (int (untilNext), n);
-                // jittered interval, mean = 1 / density
-                const double interval = double (sr) / double (ctl.density);
-                untilNext += interval * double (0.35f + 1.3f * rng.uni());
+                render (outL, outR, pos, segEnd);
+                pos = segEnd;
             }
-            untilNext -= double (n);
-        }
-        else
-        {
-            untilNext = 0.0;
-        }
+            if (! spawnHere)
+                break;
 
-        // ---- render
-        const HannTable& hann = hannTable();
-        numActive = 0;
-        for (auto& g : grains)
-        {
-            if (! g.active) continue;
-            ++numActive;
-            int i = g.startOffset;
-            g.startOffset = 0;
-            const Ring& src = g.band == 0 ? cap : (g.band == 1 ? capA : capB);
-            for (; i < n; ++i)
-            {
-                float w;
-                if (g.ph < g.attack)
-                    w = hann (0.5f * g.ph * g.invAttack);
-                else
-                {
-                    const float f = hann (0.5f + 0.5f * (g.ph - g.attack) * g.invRelease);
-                    w = f + (f * f * f - f) * g.pluck;
-                }
-                const float s = w * src.readHermite (g.pos);
-                outL[i] += s * g.gl;
-                outR[i] += s * g.gr;
-                g.pos += g.inc;
-                g.ph += g.phInc;
-                if (g.ph >= 1.0f) { g.active = false; break; }
-            }
+            spawn (pos, n);
+            // jittered interval, mean = 1 / density
+            const double interval = double (sr) / double (ctl.density);
+            untilNext += interval * double (0.35f + 1.3f * rng.uni());
         }
+        untilNext = spawning ? untilNext - double (n) : 0.0;
+
+        numActive = 0;
+        for (const auto& g : grains)
+            numActive += g.active ? 1 : 0;
 
         // ---- level + feedback tap
         for (int i = 0; i < n; ++i)
@@ -176,7 +155,7 @@ private:
     struct Grain
     {
         bool active = false;
-        int startOffset = 0, band = 0;
+        int band = 0;
         double pos = 0.0, inc = 1.0;
         float ph = 0.0f, phInc = 0.0f;
         float gl = 0.7f, gr = 0.7f;
@@ -209,23 +188,56 @@ private:
         return 12.0f;
     }
 
+    void render (float* outL, float* outR, int from, int to)
+    {
+        const HannTable& hann = hannTable();
+        for (auto& g : grains)
+        {
+            if (! g.active) continue;
+            const Ring& src = g.band == 0 ? cap : (g.band == 1 ? capA : capB);
+            for (int i = from; i < to; ++i)
+            {
+                float w;
+                if (g.ph < g.attack)
+                    w = hann (0.5f * g.ph * g.invAttack);
+                else
+                {
+                    const float f = hann (0.5f + 0.5f * (g.ph - g.attack) * g.invRelease);
+                    w = f + (f * f * f - f) * g.pluck;
+                }
+                const float s = w * src.readHermite (g.pos);
+                outL[i] += s * g.gl;
+                outR[i] += s * g.gr;
+                g.pos += g.inc;
+                g.ph += g.phInc;
+                if (g.ph >= 1.0f) { g.active = false; break; }
+            }
+        }
+    }
+
     void spawn (int offsetInBlock, int blockLen)
     {
-        Grain* slot = nullptr;
-        for (auto& g : grains)
-            if (! g.active) { slot = &g; break; }
-        if (slot == nullptr)
-            return; // pool full: skip (density is normalised anyway)
-
-        Grain& g = *slot;
+        // Draw every random value first: the random sequence must not depend on whether a
+        // slot happens to be free.
         const float lenSamples = std::max (32.0f, ctl.sizeMs * 0.001f * sr * rng.range (0.7f, 1.3f));
         const float detune = rng.bi() * (3.0f + 9.0f * ctl.spread) * 0.01f;
         const float ratio = clampf (semitonesToRatio (ctl.pitchSemis + pickInterval() + detune), 0.25f, 4.0f);
         const bool rev = rng.chance (ctl.reverse);
+        const float u = rng.uni();
+        const float nearJitter = rng.uni();
+        const float pan = rng.bi() * clampf (ctl.pan, 0.0f, 1.0f);
+        const float amp = rng.range (0.6f, 1.0f);
+
+        Grain* slot = nullptr;
+        for (auto& g : grains)
+            if (! g.active) { slot = &g; break; }
+        if (slot == nullptr)
+            return; // pool full (64 overlapping grains): this grain is skipped
+
+        Grain& g = *slot;
 
         // how far behind "now" the grain starts
-        const float u = rng.uni();
-        double offset = minOffset + double (rng.uni() * 0.03f * sr) + double (u * u * ctl.scatter * 3.0f * sr);
+        double offset = minOffset + double (nearJitter * 0.03f * sr) + double (u * u * ctl.scatter * 3.0f * sr);
         if (! rev && ratio > 1.0f)
             offset += double ((ratio - 1.0f) * lenSamples);
 
@@ -236,7 +248,6 @@ private:
         g.band = ratio <= 1.3f ? 0 : (ratio <= 2.2f ? 1 : 2);
         g.ph = 0.0f;
         g.phInc = 1.0f / lenSamples;
-        g.startOffset = offsetInBlock;
 
         const float shape = clampf (ctl.shape, 0.0f, 1.0f);
         // droplets need a click-free but fast onset: at least 3 ms
@@ -246,9 +257,7 @@ private:
         g.invRelease = 1.0f / (1.0f - g.attack);
         g.pluck = 1.0f - shape;
 
-        const float pan = rng.bi() * clampf (ctl.pan, 0.0f, 1.0f);
         const float ang = (pan + 1.0f) * 0.25f * kPi;
-        const float amp = rng.range (0.6f, 1.0f);
         g.gl = amp * std::cos (ang) * 1.4142f;
         g.gr = amp * std::sin (ang) * 1.4142f;
         g.active = true;
@@ -269,10 +278,10 @@ private:
 
     OnePoleHP fbHp;
     OnePoleLP fbLp;
-    float fbGain = 0.0f;
 
-    Smooth sNorm, sOn;
-    Ramp rGain;
+    Smooth sNorm, sOn, sFb;
+    Ramp rGain, rFb;
+    bool firstFb = true;
 };
 
 } // namespace verdant

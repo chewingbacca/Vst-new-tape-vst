@@ -707,8 +707,9 @@ TEST (delay_shifter_transposes)
     {
         DelayShifter s;
         s.prepare (sr, 83.0f, 4.0f);
-        s.setRatio (ratio);
         s.reset();
+        s.setRatio (ratio);
+        s.snap();
         std::vector<float> out (48000);
         float peak = 0.0f;
         for (int i = 0; i < 48000; ++i)
@@ -815,6 +816,218 @@ TEST (reverb_cannot_run_away)
 }
 
 //==============================================================================
+//==============================================================================
+// Regression tests for defects found by an independent code review.
+
+TEST (tape_varispeed_stays_clean_after_the_capture_ring_wraps)
+{
+    // The alignment search once compared against samples ahead of the write head; it only
+    // "worked" until the 10.9 s ring wrapped. Check a pure tone is still pure after 13 s.
+    for (float sr : { 44100.0f, 48000.0f })
+    {
+        Tape t;
+        t.prepare (sr);
+        Tape::Controls c;
+        c.wow = c.flutter = c.drive = c.age = 0.0f;
+        c.speedSemis = -12.0f;
+        const int N = int (sr) * 14;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * 330.0f * float (i) / sr);
+        runBlocks (N, [&] (int pos) { c.beat = double (pos) / double (sr) * 2.0; t.control (c); },
+                   [&] (int pos, int n) { t.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        const float* late = oL.data() + N - 20000;
+        CHECK (std::abs (cents (dominantHz (late, 16384, sr, 100.0, 400.0), 165.0)) < 10.0);
+        // steady level: no beating between two neighbouring lines
+        double lo = 1.0e9, hi = 0.0;
+        for (int k = 0; k < 8; ++k)
+        {
+            const double r = rmsOf (late + k * 2000, 2000);
+            lo = std::min (lo, r); hi = std::max (hi, r);
+        }
+        CHECK (hi / lo < 1.15);
+    }
+}
+
+TEST (reverb_decay_jumps_do_not_click)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 6;
+    Reverb rv;
+    rv.prepare (sr);
+    Reverb::Controls c;
+    c.shimmer = 0.0f; c.mod = 0.0f; c.decaySec = 0.3f;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    for (int i = 0; i < N; ++i) in[size_t (i)] = 0.25f * std::sin (kTwoPi * 100.0f * float (i) / sr);
+    runBlocks (N, [&] (int pos)
+               {
+                   const int k = pos / 24000;      // every half second jump the decay somewhere extreme
+                   c.infinite = (k % 4) == 1;
+                   c.decaySec = (k % 4) == 2 ? 60.0f : ((k % 4) == 3 ? 2.0f : 0.3f);
+                   rv.control (c);
+               },
+               [&] (int pos, int n) { rv.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+    float worst = 0.0f;
+    for (int i = 2; i < N; ++i)
+        worst = std::max (worst, std::abs (oL[size_t (i)] - 2.0f * oL[size_t (i - 1)] + oL[size_t (i - 2)]));
+    CHECK (worst < 2.0e-3f);     // was 6e-2 before the line gains were ramped
+}
+
+TEST (reverb_switched_back_on_does_not_replay_old_audio)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 10;
+    for (float pre : { 20.0f, 250.0f })
+    {
+        Reverb rv;
+        rv.prepare (sr);
+        Reverb::Controls c;
+        c.predelayMs = pre; c.decaySec = 1.0f;
+        std::vector<float> in (static_cast<size_t> (N), 0.0f), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < int (sr) * 6; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * 440.0f * float (i) / sr);
+        runBlocks (N, [&] (int pos) { c.on = pos < int (sr) || pos >= int (sr) * 8; rv.control (c); },
+                   [&] (int pos, int n) { rv.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        float peak = 0.0f;       // input has been silent since 6 s; re-enabled at 8 s
+        for (int i = int (sr) * 8; i < N; ++i) peak = std::max (peak, std::abs (oL[size_t (i)]));
+        CHECK (peak < 1.0e-4f);
+    }
+}
+
+TEST (grain_cloud_is_block_size_invariant_when_saturated)
+{
+    // More grains requested than the pool holds: slot reuse must still be sample-accurate.
+    auto render = [] (int block)
+    {
+        const float sr = 48000.0f;
+        GrainCloud g;
+        g.prepare (sr);
+        GrainCloud::Controls c;
+        c.density = 120.0f; c.sizeMs = 900.0f; c.feedback = 0.5f;
+        const int N = int (sr) * 3;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        Rng rng;
+        for (auto& v : in) v = 0.2f * rng.bi();
+        int chunkPos = 0;
+        for (int pos = 0; pos < N;)
+        {
+            if (chunkPos == 0) g.control (c);
+            const int n = std::min ({ block, 32 - chunkPos, N - pos });
+            g.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n);
+            pos += n; chunkPos = (chunkPos + n) % 32;
+        }
+        return oL;
+    };
+    const auto a = render (32), b = render (7), c = render (1);
+    double errB = 0.0, errC = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        errB = std::max (errB, double (std::abs (a[i] - b[i])));
+        errC = std::max (errC, double (std::abs (a[i] - c[i])));
+    }
+    CHECK (errB == 0.0);
+    CHECK (errC == 0.0);
+}
+
+TEST (grain_regrow_jumps_do_not_click)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 6;
+    GrainCloud g;
+    g.prepare (sr);
+    GrainCloud::Controls c;
+    c.shape = 1.0f; c.sizeMs = 400.0f; c.density = 20.0f; c.spread = 0.0f; c.reverse = 0.0f;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    for (int i = 0; i < N; ++i) in[size_t (i)] = 0.25f * std::sin (kTwoPi * 100.0f * float (i) / sr);
+    auto run = [&] (bool jump)
+    {
+        g.reset();
+        runBlocks (N, [&] (int pos) { c.feedback = (jump && (pos / 24000) % 2 == 1) ? 1.0f : 0.0f; g.control (c); },
+                   [&] (int pos, int n) { g.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        float worst = 0.0f;
+        for (int i = 2; i < N; ++i)
+            worst = std::max (worst, std::abs (oL[size_t (i)] - 2.0f * oL[size_t (i - 1)] + oL[size_t (i - 2)]));
+        return worst;
+    };
+    const float base = run (false), jumping = run (true);
+    CHECK (jumping < base * 4.0f + 1.0e-3f);      // was x160 with the un-smoothed gain
+}
+
+TEST (arp_recovers_after_the_input_gets_quieter)
+{
+    // Loud note, then the same note 28 dB quieter and sustained: the arp must keep playing.
+    const float sr = 48000.0f;
+    Arp arp;
+    arp.prepare (sr);
+    Arp::Controls c;
+    c.pattern = 0; c.rate = 5; c.hold = 1.0f; c.track = false;
+    const int N = int (sr) * 16;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    for (int i = 0; i < N; ++i)
+        in[size_t (i)] = (i < int (sr) * 2 ? 0.5f : 0.02f) * std::sin (kTwoPi * 330.0f * float (i) / sr);
+    runBlocks (N, [&] (int pos) { c.beat = double (pos) / 24000.0; arp.control (c); },
+               [&] (int pos, int n) { arp.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+    for (int sec = 9; sec < 16; ++sec)
+        CHECK (rmsOf (oL.data() + int (sr) * sec, int (sr)) > 1.0e-3);
+}
+
+TEST (engine_reset_is_exact_with_stopped_transport_and_any_shimmer_interval)
+{
+    Engine e;
+    e.prepare (48000.0, 512);
+    ParamValues p;
+    p[pRevShimmerPitch] = 1.0f; p[pRevShimmer] = 0.8f; p[pTapeStutter] = 0.5f;
+    auto render = [&]
+    {
+        e.setParams (p);
+        auto s = vtest::phrase (48000.0, 3.0);
+        Transport tr;                      // not playing: the engine free-runs its own clock
+        e.process (s.l.data(), s.r.data(), int (s.size()), tr);
+        return s;
+    };
+    const auto a = render();
+    e.reset();
+    const auto b = render();
+    double err = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) err = std::max (err, double (std::abs (a.l[i] - b.l[i])));
+    CHECK (err == 0.0);
+}
+
+TEST (engine_is_block_size_invariant_at_very_slow_tempo_and_with_a_saturated_cloud)
+{
+    auto render = [] (int block, double bpm)
+    {
+        Engine e;
+        e.prepare (48000.0, 4096);
+        ParamValues p;
+        p[pTapeStutter] = 1.0f; p[pTapeStretch] = 4.0f;
+        p[pGrainDensity] = 80.0f; p[pGrainSize] = 800.0f; p[pBloom] = 1.0f; p[pGrowth] = 1.0f;
+        e.setParams (p);
+        auto s = vtest::phrase (48000.0, 6.0);
+        Transport tr;
+        tr.playing = true; tr.bpm = bpm;
+        size_t pos = 0;
+        while (pos < s.size())
+        {
+            const int n = int (std::min (size_t (block), s.size() - pos));
+            tr.ppq = double (pos) / 48000.0 * bpm / 60.0;
+            e.process (s.l.data() + pos, s.r.data() + pos, n, tr);
+            pos += size_t (n);
+        }
+        return s;
+    };
+    for (double bpm : { 5.0, 12.0, 137.0 })
+    {
+        const auto a = render (32, bpm), b = render (7, bpm), c = render (4096, bpm);
+        double errB = 0.0, errC = 0.0;
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            errB = std::max (errB, double (std::abs (a.l[i] - b.l[i])));
+            errC = std::max (errC, double (std::abs (a.l[i] - c.l[i])));
+        }
+        CHECK (errB < 1.0e-4);
+        CHECK (errC < 1.0e-4);
+    }
+}
+
 TEST (engine_dry_and_wet_paths_are_time_aligned)
 {
     // With every module off the wet path is just the direct signal. Mixed 50/50 with the dry
@@ -966,7 +1179,8 @@ TEST (engine_toggles_and_jumps_do_not_click)
                 case 8: p[pBloom] = rng.uni(); p[pSunlight] = rng.uni(); p[pRoots] = rng.uni(); p[pMoisture] = rng.uni(); break;
                 case 9: p[pChorusVoices] = float (2 + rng.irange (23)); p[pChorusMode] = float (rng.irange (2)); break;
                 case 10: p[pRevMix] = rng.uni(); p[pTapeMix] = rng.uni(); p[pChorusMix] = rng.uni(); break;
-                default: p[pTapeDrive] = rng.uni(); p[pTapeAge] = rng.uni(); p[pRevDamping] = rng.range (500.0f, 20000.0f); break;
+                default: p[pTapeDrive] = rng.uni(); p[pTapeAge] = rng.uni(); p[pRevDamping] = rng.range (500.0f, 20000.0f);
+                         p[pDrift] = p[pDrift] > 0.5f ? 0.0f : 1.0f; p[pRevDecay] = p[pRevDecay] > 30.0f ? 0.3f : 61.0f; break;
             }
         }
         e.setParams (p);

@@ -81,6 +81,7 @@ public:
         gateRel = 1.0f - std::exp (-1.0f / (0.040f * sr));
         hangSamples = int (0.08f * sr);
         peakDecay = std::pow (0.5f, 1.0f / (4.0f * sr));
+        anchorTimeout = int64_t (3.0f * sr);
         sOn.setTime (0.03f, tickRate);
         reset();
     }
@@ -185,6 +186,9 @@ public:
                 // remember where the sound was last "strong": decaying plucks are then
                 // re-played from their body, not from their quiet tail
                 if (env >= 0.5f * peakHold) loudPos = recW;
+                // ...but never get stuck there: if quieter material has been sounding for 3 s
+                // (e.g. a soft sustained note after a loud chord), re-reference to it.
+                else if (recW - loudPos > anchorTimeout) { peakHold = env; loudPos = recW; }
             }
 
             if (trackOn) tracker.push (x);
@@ -379,7 +383,7 @@ private:
     Svf lpA1, lpA2, lpB1, lpB2;
     OnePoleHP recHp;
     int ringLen = 0;
-    int64_t recW = 0, recorded = 0, loudPos = 0;
+    int64_t recW = 0, recorded = 0, loudPos = 0, anchorTimeout = 144000;
     float peakHold = 0.0f, peakDecay = 1.0f;
 
     float env = 0.0f, gate = 0.0f, envAtk = 0, envRel = 0, gateAtk = 0, gateRel = 0;
