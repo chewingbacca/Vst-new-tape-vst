@@ -79,7 +79,7 @@ private:
     // ---- smoothed macro / global controls
     Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
     Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix, rArpDirect, rArpSend;
-    Smooth sGrainMix, sArpMix, sArpWash, sRevMix, sRevOn;
+    Smooth sGrainMix, sArpMix, sArpWash, sRevMix, sRevOn, sTilt;
     Ramp rRevDry, rRevWet, rRevOff;
 
     // ---- modules
@@ -97,8 +97,14 @@ private:
     // ---- metering
     float meterIn = 0.0f, meterOutL = 0.0f, meterOutR = 0.0f, meterWet = 0.0f;
     OnePoleLP bandLo, bandHi;
+    OnePoleHP ambHp[4];   // keeps grain / arp envelopes from thumping below ~70 Hz
     float eLow = 0.0f, eMid = 0.0f, eHigh = 0.0f;
     float duckEnv = 0.0f, duckAtk = 0.0f, duckRel = 0.0f;
+    float minLimiterGain = 1.0f;
+
+public:
+    // Smallest limiter gain since the last call (for tests / tuning); resets the tracker.
+    float takeMinLimiterGain() { const float g = minLimiterGain; minLimiterGain = 1.0f; return g; }
 };
 
 } // namespace verdant

@@ -36,7 +36,9 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sArpWash.setTime (0.04f, tickRate);
     sRevMix.setTime (0.04f, tickRate);
     sRevOn.setTime (0.03f, tickRate);
+    sTilt.setTime (0.05f, tickRate);
 
+    for (auto& h : ambHp) h.setCutoff (70.0f, sr);
     bandLo.setCutoff (250.0f, sr);
     bandHi.setCutoff (2500.0f, sr);
     duckAtk = 1.0f - std::exp (-1.0f / (0.012f * sr));
@@ -59,6 +61,7 @@ void Engine::reset()
     for (auto& d : drift) d.reset();
     follower.reset();
     bandLo.reset(); bandHi.reset();
+    for (auto& h : ambHp) h.reset();
     chunkPos = 0;
     firstBlock = true;
     meterIn = meterOutL = meterOutR = meterWet = 0.0f;
@@ -218,13 +221,18 @@ void Engine::controlTick()
 
     // ---- output tone
     {
-        const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
+        sTilt.set (p[pOutTilt]);
+        if (firstBlock) sTilt.snap (sTilt.target);
+        const float tiltDb = clampf (6.0f * sTilt.tick() + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
         const float rootsDb = 6.0f * macroBipolar (roots);
         tone.setTone (tiltDb, rootsDb);
     }
 
-    const float dry = std::cos (mix * 0.5f * kPi);
-    const float wet = std::sin (mix * 0.5f * kPi) * outGain;
+    // Equal-power crossfade, trimmed in the middle: the wet path contains a coherent copy
+    // of the direct sound, so a pure equal-power law would bump the level around 50 %.
+    const float trim = 1.0f - 0.16f * std::sin (mix * kPi);
+    const float dry = std::cos (mix * 0.5f * kPi) * trim;
+    const float wet = std::sin (mix * 0.5f * kPi) * trim * outGain;
 
     if (firstBlock)
     {
@@ -282,10 +290,12 @@ void Engine::processChunk (float* l, float* r, int n)
     {
         const float gm = rGrainMix.next() * duckG[i];
         const float ad = rArpDirect.next() * duckG[i], as = rArpSend.next();
-        bL[i] = tL[i] + gm * gL[i] + ad * aL[i];
-        bR[i] = tR[i] + gm * gR[i] + ad * aR[i];
-        sL[i] = as * aL[i];
-        sR[i] = as * aR[i];
+        const float cl = ambHp[0].process (gL[i]), cr = ambHp[1].process (gR[i]);
+        const float al = ambHp[2].process (aL[i]), ar = ambHp[3].process (aR[i]);
+        bL[i] = tL[i] + gm * cl + ad * al;
+        bR[i] = tR[i] + gm * cr + ad * ar;
+        sL[i] = as * al;
+        sR[i] = as * ar;
     }
 
     // ---- chorus
@@ -324,6 +334,7 @@ void Engine::processChunk (float* l, float* r, int n)
         float outR = dryDelay[1].tap (dryLag) * dg + wetR * wg;
 
         limiter.process (outL, outR);
+        minLimiterGain = std::min (minLimiterGain, limiter.gainReduction());
 
         // latency-matched clean path for click-free bypass
         outL += (bypassDelay[0].tap (bypLag) - outL) * bp;

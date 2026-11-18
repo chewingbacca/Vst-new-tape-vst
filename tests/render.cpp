@@ -33,14 +33,16 @@ struct Job
     int block = 256;
     bool varBlock = false, automate = false, playing = true, writeWav = true;
     std::vector<std::pair<int, float>> sets;
-    bool expectSilence = false, allowSustain = false;
+    struct Event { double time; int pid; float value; };
+    std::vector<Event> events;                 // parameter changes at a given time (seconds)
+    bool expectSilence = false, allowSustain = false, expectHold = false, cyclePresets = false;
 };
 
 struct Result
 {
     Job job;
     vtest::Stats stats;
-    double cpuPercent = 0.0, growthDb = 0.0, endDb = 0.0;
+    double cpuPercent = 0.0, growthDb = 0.0, endDb = 0.0, limiterDb = 0.0, relLevelDb = 0.0, maxStep = 0.0;
     std::vector<std::string> failures;
 };
 
@@ -87,6 +89,10 @@ Result runJob (const Job& job, const std::string& outDir)
         base[s.first] = s.second;
 
     Stereo sig = vtest::makeSignal (job.signal, job.sr, job.seconds);
+    const double inputEnd = (job.signal == "phrase" || job.signal == "sweep") ? 4.5 : 3.0;
+    const double dryDb = windowDb (sig, job.sr, 0.05, inputEnd);
+    size_t nextEvent = 0;
+    float minLim = 1.0f;
 
     Engine engine;
     engine.prepare (job.sr, 8192);
@@ -115,23 +121,42 @@ Result runJob (const Job& job, const std::string& outDir)
             for (int k = 0; k < 6; ++k)
             {
                 const int pid = rng.irange (kNumParams);
-                if (pid == pBypass && ! rng.chance (0.05f)) continue;
+                // bypass passes the input straight through, so it is only exercised on sane input
+                if (pid == pBypass && (job.signal == "hostile" || ! rng.chance (0.05f))) continue;
                 cur[pid] = fromNormalised (kParams[pid], rng.uni());
             }
+        }
+        while (nextEvent < job.events.size() && double (pos) >= job.events[nextEvent].time * job.sr)
+        {
+            cur[job.events[nextEvent].pid] = job.events[nextEvent].value;
+            ++nextEvent;
+        }
+        if (job.cyclePresets)
+        {
+            // jump to the next factory preset every 1.5 s
+            const int idx = int (double (pos) / job.sr / 1.5) % int (presets.size());
+            const float byp = cur[pBypass];
+            cur = presets[size_t (idx)].resolve();
+            cur[pBypass] = byp;
         }
 
         engine.setParams (cur);
         tr.ppq = double (pos) / job.sr * job.bpm / 60.0;
         engine.process (sig.l.data() + pos, sig.r.data() + pos, n, tr);
         pos += size_t (n);
+        minLim = std::min (minLim, engine.takeMinLimiterGain());
     }
 
     const double elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
     res.cpuPercent = 100.0 * elapsed / job.seconds;
     res.stats = vtest::analyse (sig, job.sr);
 
+    res.limiterDb = vtest::toDb (double (minLim));
+    res.relLevelDb = windowDb (sig, job.sr, 0.05, inputEnd) - dryDb;
+    for (size_t i = 1; i < sig.size(); ++i)
+        res.maxStep = std::max (res.maxStep, double (std::abs (sig.l[i] - sig.l[i - 1])));
+
     // Tail behaviour: compare level just after the input ends with the end of the render.
-    const double inputEnd = (job.signal == "phrase" || job.signal == "sweep") ? 4.5 : 3.0;
     const double early = windowDb (sig, job.sr, inputEnd, inputEnd + 1.0);
     const double late  = windowDb (sig, job.sr, job.seconds - 1.0, job.seconds);
     res.growthDb = late - early;
@@ -152,6 +177,8 @@ Result runJob (const Job& job, const std::string& outDir)
         if (res.growthDb > 3.0 && late > -50.0) fail ("tail grows after input stops (runaway)");
         if (! job.allowSustain && job.seconds >= 12.0 && late > -20.0 && job.signal != "sine")
             fail ("tail still loud at end of render");
+        if (job.expectHold && late < windowDb (sig, job.sr, 6.0, 7.0) - 6.0)
+            fail ("frozen tail did not hold");
     }
 
     if (job.writeWav && ! outDir.empty())
@@ -173,7 +200,8 @@ std::string jsonLine (const Result& r)
     o << r.stats.dc;
     o.precision (3);
     o << ",\"end_db\":" << r.endDb << ",\"growth_db\":" << r.growthDb << ",\"corr\":" << r.stats.correlation
-      << ",\"bad\":" << r.stats.bad << ",\"cpu_pct\":" << r.cpuPercent << ",\"ok\":" << (r.failures.empty() ? "true" : "false")
+      << ",\"rel_db\":" << r.relLevelDb << ",\"limiter_db\":" << r.limiterDb
+      << ",\"max_step\":" << r.maxStep << ",\"bad\":" << r.stats.bad << ",\"cpu_pct\":" << r.cpuPercent << ",\"ok\":" << (r.failures.empty() ? "true" : "false")
       << ",\"failures\":[";
     for (size_t i = 0; i < r.failures.size(); ++i)
         o << (i ? "," : "") << "\"" << r.failures[i] << "\"";
@@ -272,9 +300,20 @@ std::vector<Job> buildSuite (bool quick)
                    { pBloom, 1.0f }, { pMoisture, 1.0f }, { pSunlight, 1.0f }, { pMix, 1.0f } };
         jobs.push_back (k);
 
-        Job f; f.signal = "phrase"; f.seconds = 60.0; f.allowSustain = true; f.name = "extreme_freeze";
-        f.sets = { { pRevFreeze, 1.0f }, { pRevMix, 1.0f }, { pMix, 1.0f } };
+        // freeze engaged mid-phrase must hold its level for a minute
+        Job f; f.signal = "phrase"; f.seconds = 60.0; f.allowSustain = true; f.expectHold = true; f.name = "extreme_freeze";
+        f.sets = { { pRevMix, 1.0f }, { pMix, 1.0f } };
+        f.events = { { 3.0, pRevFreeze, 1.0f } };
         jobs.push_back (f);
+
+        // walking through every preset while audio is running
+        for (const char* sgl : { "sine", "phrase" })
+        {
+            Job c; c.signal = sgl; c.seconds = 1.5 * double (factoryPresets().size()) * 2.0; c.allowSustain = true;
+            c.cyclePresets = true; c.varBlock = true;
+            c.name = std::string ("preset_cycle_") + sgl;
+            jobs.push_back (c);
+        }
     }
 
     return jobs;
@@ -283,7 +322,7 @@ std::vector<Job> buildSuite (bool quick)
 void usage()
 {
     std::cout << "verdant_render [--suite [--quick]] [--out DIR] [--signal NAME] [--preset NAME|N] [--solo MODULE]\n"
-                 "               [--set id=value]... [--sr HZ] [--block N] [--seconds S] [--bpm B] [--name NAME]\n"
+                 "               [--set id=value]... [--at SECONDS:id=value]... [--sr HZ] [--block N] [--seconds S] [--bpm B] [--name NAME]\n"
                  "               [--varblock] [--automate] [--stopped] [--list-presets] [--list-params]\n"
                  "signals: impulse sweep noise phrase pluck voice hostile sine silence\n"
                  "solo:    dry tape grain arp chorus reverb\n";
@@ -330,6 +369,16 @@ int main (int argc, char** argv)
                 if (end != v.c_str() && *end == 0 && n >= 0 && n < long (ps.size())) job.preset = int (n);
                 else { std::cerr << "unknown preset: " << v << "\n"; return 2; }
             }
+        }
+        else if (a == "--at")
+        {
+            // --at 3.0:revFreeze=1
+            const std::string v = next();
+            const auto colon = v.find (':'), eq = v.find ('=');
+            const int pid = (colon == std::string::npos || eq == std::string::npos) ? -1
+                          : findParam (v.substr (colon + 1, eq - colon - 1).c_str());
+            if (pid < 0) { std::cerr << "bad --at " << v << "\n"; return 2; }
+            job.events.push_back ({ std::atof (v.substr (0, colon).c_str()), pid, float (std::atof (v.substr (eq + 1).c_str())) });
         }
         else if (a == "--set")
         {

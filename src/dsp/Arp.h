@@ -114,7 +114,7 @@ public:
             linger += 0.08f * (1.0f - linger);
         else if (c.hold < 0.98f)
         {
-            const float T = 0.15f * std::pow (200.0f, clampf (c.hold, 0.0f, 1.0f));
+            const float T = 0.10f * std::pow (120.0f, clampf (c.hold, 0.0f, 1.0f));   // 0.1 s .. 12 s
             linger *= std::exp (-1.0f / (T * tickRate));
             if (linger < 1.0e-4f) linger = 0.0f;
         }
