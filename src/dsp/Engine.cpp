@@ -7,6 +7,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
 {
     sr = float (sampleRate);
     tickRate = sr / float (kChunk);
+    (void) hannTable();     // build shared lookup tables here, never on the audio thread
 
     tape.prepare (sr);
     grain.prepare (sr);
