@@ -10,6 +10,7 @@
 #include <atomic>
 
 #include "Arp.h"
+#include "Chorus.h"
 #include "GrainCloud.h"
 #include "Modulation.h"
 #include "Output.h"
@@ -83,6 +84,7 @@ private:
     Tape tape;
     GrainCloud grain;
     Arp arp;
+    Chorus chorus;
     OutputTone tone;
     Limiter limiter;
 

@@ -11,6 +11,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     tape.prepare (sr);
     grain.prepare (sr);
     arp.prepare (sr);
+    chorus.prepare (sr);
     tone.prepare (sr);
     limiter.prepare (sr);
 
@@ -46,6 +47,7 @@ void Engine::reset()
     tape.reset();
     grain.reset();
     arp.reset();
+    chorus.reset();
     tone.reset();
     limiter.reset();
     for (auto& d : dryDelay) d.clear();
@@ -165,6 +167,20 @@ void Engine::controlTick()
         rArpSend.begin (send, kChunk);
     }
 
+    // ---- chorus
+    {
+        Chorus::Controls c;
+        c.on = p[pChorusOn] >= 0.5f;
+        c.mix = clampf (p[pChorusMix] * macroScale (bloom, 0.4f, 1.3f), 0.0f, 1.0f);
+        c.voices = int (p[pChorusVoices] + 0.5f);
+        c.rateHz = p[pChorusRate] * macroScale (growth, 0.5f, 2.0f) * (1.0f + 0.2f * driftVal[2]);
+        c.depth = clampf (p[pChorusDepth] * (1.0f + 0.25f * driftVal[3]), 0.0f, 1.0f);
+        c.glass = p[pChorusMode] >= 0.5f ? 1.0f : 0.0f;
+        c.width = p[pChorusWidth];
+        c.xoverHz = p[pChorusXover];
+        chorus.control (c);
+    }
+
     // ---- output tone
     {
         const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
@@ -225,16 +241,29 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- arp (records the tape output while it sounds)
     arp.process (tL, tR, aL, aR, n);
 
+    // ---- bus: tape + cloud + direct arp; the arp "wash" goes straight to the reverb
+    float bL[kChunk], bR[kChunk], sL[kChunk], sR[kChunk];
+    for (int i = 0; i < n; ++i)
+    {
+        const float gm = rGrainMix.next() * duckG[i];
+        const float ad = rArpDirect.next() * duckG[i], as = rArpSend.next();
+        bL[i] = tL[i] + gm * gL[i] + ad * aL[i];
+        bR[i] = tR[i] + gm * gR[i] + ad * aR[i];
+        sL[i] = as * aL[i];
+        sR[i] = as * aR[i];
+    }
+
+    // ---- chorus
+    chorus.process (bL, bR, n);
+
     // ---- output
     const int dryLag = tape.nominalDelay();
     const int bypLag = latencySamples();
 
     for (int i = 0; i < n; ++i)
     {
-        const float gm = rGrainMix.next() * duckG[i];
-        const float ad = rArpDirect.next() * duckG[i], as = rArpSend.next();
-        float wetL = tL[i] + gm * gL[i] + (ad + as) * aL[i];
-        float wetR = tR[i] + gm * gR[i] + (ad + as) * aR[i];
+        float wetL = bL[i] + sL[i];
+        float wetR = bR[i] + sR[i];
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));
@@ -272,6 +301,8 @@ void Engine::processChunk (float* l, float* r, int n)
 
 void Engine::process (float* left, float* right, int n, const Transport& transport)
 {
+    const ScopedNoDenormals noDenormals;
+
     samplesPerBeat = 60.0 * double (sr) / std::max (20.0, transport.bpm);
     beatInc = 1.0 / samplesPerBeat;
     if (transport.playing)

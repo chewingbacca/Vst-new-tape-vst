@@ -8,8 +8,45 @@
 #include <cstring>
 #include <vector>
 
+#if defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+ #include <xmmintrin.h>
+ #define VERDANT_HAS_SSE 1
+#endif
+
 namespace verdant
 {
+
+// Turns on flush-to-zero / denormals-are-zero for the current scope, so decaying
+// filter and reverb states never fall into slow denormal arithmetic. Hosts usually
+// do this too, but the engine must not depend on it.
+class ScopedNoDenormals
+{
+public:
+    ScopedNoDenormals()
+    {
+       #if defined(VERDANT_HAS_SSE)
+        saved = _mm_getcsr();
+        _mm_setcsr (static_cast<unsigned int> (saved) | 0x8040u);
+       #elif defined(__aarch64__)
+        uint64_t fpcr;
+        __asm__ __volatile__ ("mrs %0, fpcr" : "=r" (fpcr));
+        saved = fpcr;
+        fpcr |= (uint64_t (1) << 24);
+        __asm__ __volatile__ ("msr fpcr, %0" : : "r" (fpcr));
+       #endif
+    }
+    ~ScopedNoDenormals()
+    {
+       #if defined(VERDANT_HAS_SSE)
+        _mm_setcsr (static_cast<unsigned int> (saved));
+       #elif defined(__aarch64__)
+        const uint64_t fpcr = saved;
+        __asm__ __volatile__ ("msr fpcr, %0" : : "r" (fpcr));
+       #endif
+    }
+private:
+    uint64_t saved = 0;
+};
 
 inline constexpr float kPi    = 3.14159265358979323846f;
 inline constexpr float kTwoPi = 6.28318530717958647692f;
