@@ -9,6 +9,7 @@
 
 #include <atomic>
 
+#include "GrainCloud.h"
 #include "Modulation.h"
 #include "Output.h"
 #include "Params.h"
@@ -74,10 +75,12 @@ private:
 
     // ---- smoothed macro / global controls
     Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
-    Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck;
+    Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix;
+    Smooth sGrainMix;
 
     // ---- modules
     Tape tape;
+    GrainCloud grain;
     OutputTone tone;
     Limiter limiter;
 

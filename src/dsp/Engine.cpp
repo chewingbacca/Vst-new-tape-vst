@@ -9,6 +9,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     tickRate = sr / float (kChunk);
 
     tape.prepare (sr);
+    grain.prepare (sr);
     tone.prepare (sr);
     limiter.prepare (sr);
 
@@ -27,6 +28,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sOutGain.setTime (0.03f, tickRate);
     sWidth.setTime (0.05f, tickRate);
     sDuck.setTime (0.05f, tickRate);
+    sGrainMix.setTime (0.04f, tickRate);
 
     bandLo.setCutoff (250.0f, sr);
     bandHi.setCutoff (2500.0f, sr);
@@ -39,6 +41,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
 void Engine::reset()
 {
     tape.reset();
+    grain.reset();
     tone.reset();
     limiter.reset();
     for (auto& d : dryDelay) d.clear();
@@ -106,6 +109,32 @@ void Engine::controlTick()
         tape.control (c);
     }
 
+    // ---- grain cloud
+    const float env = follower.shaped();
+    const float touch = p[pTouch];
+    {
+        GrainCloud::Controls c;
+        c.on = p[pGrainOn] >= 0.5f;
+        c.density = p[pGrainDensity] * macroScale (bloom, 0.5f, 1.8f) * macroScale (growth, 0.8f, 1.3f)
+                    * (1.0f + 1.2f * touch * env) * (1.0f + 0.35f * driftVal[1]);
+        c.sizeMs = p[pGrainSize] * (1.0f + 0.25f * driftVal[2]);
+        c.scatter = clampf (p[pGrainScatter] * (1.0f + 0.3f * driftVal[1]), 0.0f, 1.0f);
+        c.pitchSemis = p[pGrainPitch];
+        c.spread = clampf (p[pGrainSpread] * macroScale (bloom, 0.6f, 1.4f) + 0.25f * std::max (0.0f, macroBipolar (sunlight)), 0.0f, 1.0f);
+        c.reverse = p[pGrainReverse];
+        c.pan = p[pGrainPan];
+        c.shape = p[pGrainShape];
+        c.feedback = p[pGrainFeedback];
+        c.upBias = sunlight;
+        c.downBias = roots;
+        c.octavesOnly = int (p[pScale] + 0.5f) == 14;
+        grain.control (c);
+
+        sGrainMix.set (clampf (p[pGrainMix] * macroScale (bloom, 0.3f, 1.5f), 0.0f, 1.25f));
+        if (firstBlock) { sGrainMix.snap (sGrainMix.target); rGrainMix.snap (sGrainMix.target); }
+        rGrainMix.begin (sGrainMix.tick(), kChunk);
+    }
+
     // ---- output tone
     {
         const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
@@ -131,11 +160,13 @@ void Engine::controlTick()
 
     meters.envelope.store (follower.shaped(), std::memory_order_relaxed);
     meters.stutterPulse.store (tape.stutterEvents, std::memory_order_relaxed);
+    meters.grainPulse.store (grain.spawnCount, std::memory_order_relaxed);
+    meters.grainActivity.store (clampf (grain.activity, 0.0f, 1.0f), std::memory_order_relaxed);
 }
 
 void Engine::processChunk (float* l, float* r, int n)
 {
-    float inL[kChunk] = {}, inR[kChunk] = {}, tL[kChunk], tR[kChunk], duckG[kChunk];
+    float inL[kChunk] = {}, inR[kChunk] = {}, tL[kChunk], tR[kChunk], gL[kChunk], gR[kChunk], duckG[kChunk];
 
     // ---- input: followers, bypass gate
     for (int i = 0; i < n; ++i)
@@ -155,14 +186,18 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- tape
     tape.process (inL, inR, tL, tR, n);
 
+    // ---- grain cloud (reads the tape output)
+    grain.process (tL, tR, gL, gR, n);
+
     // ---- output
     const int dryLag = tape.nominalDelay();
     const int bypLag = latencySamples();
 
     for (int i = 0; i < n; ++i)
     {
-        float wetL = tL[i], wetR = tR[i];
-        (void) duckG;
+        const float gm = rGrainMix.next() * duckG[i];
+        float wetL = tL[i] + gm * gL[i];
+        float wetR = tR[i] + gm * gR[i];
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));
