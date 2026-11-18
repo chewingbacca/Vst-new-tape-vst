@@ -10,6 +10,8 @@ in ─┬───────────────────────�
              └─► Arp ──(direct)──► bus,  ──(wash)──► reverb
 ```
 
+![Garden page](docs/garden-page.png)
+
 All DSP is original and lives in a JUCE-free C++20 library (`src/dsp`), wrapped by a JUCE 9 plugin
 (`src/plugin`) with a fully custom-drawn, resizable editor.
 
@@ -68,6 +70,8 @@ page has every module parameter. The preset browser is in the header; the status
 bottom explains whatever control is under the mouse. Double-click a knob to reset it, double-click
 its value to type one ("3.2k", "-7", "inf"), hold Shift for fine adjustment, use the mouse
 wheel for small steps. The window resizes from the corner (75 % to 170 %).
+
+![Soil page](docs/soil-page.png)
 
 ### Macros
 
@@ -233,6 +237,13 @@ macro map, measured numbers and what is next.
 Real-time safety: the audio thread never allocates, locks or does I/O. All buffers are sized in
 `prepare()`; parameters are read from atomics and smoothed on a fixed 32-sample internal control
 grid, so behaviour is identical at any host buffer size.
+
+## Licensing
+
+No licence has been chosen for this repository's own code yet. Note that it links JUCE, which is
+dual-licensed (AGPLv3 or a commercial JUCE licence): distributing binaries means either releasing
+under AGPLv3-compatible terms or holding a JUCE licence. "VST" is a trademark of Steinberg Media
+Technologies GmbH.
 
 ## Credits and references
 
