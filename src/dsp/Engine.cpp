@@ -224,7 +224,7 @@ void Engine::controlTick()
         sTilt.set (p[pOutTilt]);
         if (firstBlock) sTilt.snap (sTilt.target);
         const float tiltDb = clampf (6.0f * sTilt.tick() + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
-        const float rootsDb = 6.0f * macroBipolar (roots);
+        const float rootsDb = 8.0f * macroBipolar (roots);
         tone.setTone (tiltDb, rootsDb);
     }
 
@@ -284,18 +284,21 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- arp (records the tape output while it sounds)
     arp.process (tL, tR, aL, aR, n);
 
-    // ---- bus: tape + cloud + direct arp; the arp "wash" goes straight to the reverb
+    // ---- bus: tape + cloud + direct arp; the arp "wash" goes straight to the reverb.
+    // Ducking ("Clearing") turns the ambience down in what you hear, but the part that is
+    // ducked away is still sent to the reverb, so the tail blooms at full strength afterwards.
     float bL[kChunk], bR[kChunk], sL[kChunk], sR[kChunk];
     for (int i = 0; i < n; ++i)
     {
-        const float gm = rGrainMix.next() * duckG[i];
-        const float ad = rArpDirect.next() * duckG[i], as = rArpSend.next();
+        const float gm = rGrainMix.next(), ad = rArpDirect.next(), as = rArpSend.next();
         const float cl = ambHp[0].process (gL[i]), cr = ambHp[1].process (gR[i]);
         const float al = ambHp[2].process (aL[i]), ar = ambHp[3].process (aR[i]);
-        bL[i] = tL[i] + gm * cl + ad * al;
-        bR[i] = tR[i] + gm * cr + ad * ar;
-        sL[i] = as * al;
-        sR[i] = as * ar;
+        const float ambL = gm * cl + ad * al, ambR = gm * cr + ad * ar;
+        const float d = duckG[i];
+        bL[i] = tL[i] + d * ambL;
+        bR[i] = tR[i] + d * ambR;
+        sL[i] = as * al + (1.0f - d) * ambL;
+        sR[i] = as * ar + (1.0f - d) * ambR;
     }
 
     // ---- chorus
@@ -318,8 +321,8 @@ void Engine::processChunk (float* l, float* r, int n)
     {
         const float rd = rRevDry.next(), rw = rRevWet.next() * duckG[i], roff = rRevOff.next();
         // with the reverb switched off the arp wash is heard directly instead of vanishing
-        float wetL = (bL[i] + roff * sL[i]) * rd + rvL[i] * rw;
-        float wetR = (bR[i] + roff * sR[i]) * rd + rvR[i] * rw;
+        float wetL = (bL[i] + roff * duckG[i] * sL[i]) * rd + rvL[i] * rw;
+        float wetR = (bR[i] + roff * duckG[i] * sR[i]) * rd + rvR[i] * rw;
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));

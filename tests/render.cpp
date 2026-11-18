@@ -174,7 +174,8 @@ Result runJob (const Job& job, const std::string& outDir)
     {
         if (std::abs (res.stats.dc) > 0.003) fail ("DC offset");
         if (vtest::toDb (res.stats.rms) < -70.0) fail ("output unexpectedly silent");
-        if (res.growthDb > 3.0 && late > -50.0) fail ("tail grows after input stops (runaway)");
+        // (the "sine" test signal never stops, so there is no tail to judge)
+        if (job.signal != "sine" && res.growthDb > 3.0 && late > -50.0) fail ("tail grows after input stops (runaway)");
         if (! job.allowSustain && job.seconds >= 12.0 && late > -20.0 && job.signal != "sine")
             fail ("tail still loud at end of render");
         if (job.expectHold && late < windowDb (sig, job.sr, 6.0, 7.0) - 6.0)

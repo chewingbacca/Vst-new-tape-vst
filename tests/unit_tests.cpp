@@ -769,6 +769,54 @@ TEST (reverb_cannot_run_away)
 }
 
 //==============================================================================
+TEST (engine_dry_and_wet_paths_are_time_aligned)
+{
+    // With every module off the wet path is just the direct signal. Mixed 50/50 with the dry
+    // path it must add perfectly in phase (no comb filtering) at every sample rate.
+    for (double sr : { 44100.0, 48000.0, 96000.0, 192000.0 })
+    {
+        Engine e;
+        e.prepare (sr, 512);
+        ParamValues p;
+        for (PID m : { pTapeOn, pGrainOn, pArpOn, pChorusOn, pRevOn }) p[m] = 0.0f;
+        p[pMix] = 0.5f; p[pOutWidth] = 1.0f; p[pOutDuck] = 0.0f; p[pDrift] = 0.0f;
+        e.setParams (p);
+        auto s = vtest::noiseBurst (sr, 1.0, 0.8, 0.2f);
+        const auto ref = s;
+        Transport tr;
+        e.process (s.l.data(), s.r.data(), int (s.size()), tr);
+        const int lat = e.latencySamples();
+        // expected gain: (cos + sin)(pi/4) * centre trim
+        const float g = 2.0f * 0.70710678f * (1.0f - 0.16f);
+        double err = 0.0;
+        for (size_t i = size_t (lat); i < s.size(); ++i)
+            err = std::max (err, double (std::abs (s.l[i] - g * ref.l[i - size_t (lat)])));
+        CHECK (err < 2.0e-4);
+    }
+}
+
+TEST (engine_ducking_clears_space_while_playing)
+{
+    // Clearing = 1: the ambience is pushed down while the input sounds and returns afterwards.
+    auto wetDuring = [] (float duck)
+    {
+        Engine e;
+        e.prepare (48000.0, 512);
+        ParamValues p;
+        p[pOutDuck] = duck; p[pMix] = 1.0f; p[pTapeOn] = 0.0f; p[pArpOn] = 0.0f; p[pChorusOn] = 0.0f;
+        p[pGrainMix] = 1.0f; p[pRevMix] = 1.0f; p[pTouch] = 0.0f; p[pDrift] = 0.0f;
+        e.setParams (p);
+        auto s = vtest::sine (48000.0, 6.0, 330.0, 0.3f);
+        for (size_t i = 48000 * 3; i < s.size(); ++i) s.l[i] = s.r[i] = 0.0f;   // input stops at 3 s
+        Transport tr;
+        e.process (s.l.data(), s.r.data(), int (s.size()), tr);
+        return std::pair<double, double> { rmsOf (s.l.data() + 96000, 40000), rmsOf (s.l.data() + 200000, 40000) };   // 4.2 s: after the duck has released
+    };
+    const auto open = wetDuring (0.0f), ducked = wetDuring (1.0f);
+    CHECK (ducked.first < open.first * 0.6);        // clearly quieter while playing
+    CHECK (ducked.second > open.second * 0.8);      // but the tail afterwards is (almost) untouched
+}
+
 TEST (engine_is_deterministic_and_resets_cleanly)
 {
     Engine e;

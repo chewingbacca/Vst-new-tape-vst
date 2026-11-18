@@ -33,7 +33,7 @@ public:
         {
             tiltLo[c].setLow  (650.0f, -tiltDb, sr);
             tiltHi[c].setHigh (650.0f * 2.2f, tiltDb, sr);
-            roots[c].setLow   (160.0f, rootsDb, sr);
+            roots[c].setLow   (240.0f, rootsDb, sr);
         }
         sideHp.setCutoff (180.0f, sr);
     }
