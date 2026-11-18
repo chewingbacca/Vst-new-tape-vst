@@ -5,6 +5,8 @@
 //   --width W            editor width in pixels (height follows the fixed aspect ratio)
 //   --page garden|soil   page to show
 //   --browser            open the preset overlay
+//   --save-preset NAME   open the overlay and save a user preset through the UI (set HOME to a
+//                        scratch directory first; this writes a real file)
 //   --fake-presets N     add N fake presets to the overlay (to test scrolling)
 //   --choices ID         open the choice list of parameter ID (e.g. scale)
 //   --help-for ID        show parameter ID in the help line (as if hovered)
@@ -16,6 +18,10 @@
 //   --real-meters        do not overwrite the engine meters with simulated values
 //   --stutter            fire a stutter pulse shortly before the snapshot
 //   --bench N            paint the visual N times and print timing (default 200)
+//   --hover-all          call mouseEnter on every component before the editor is destroyed
+//                        (regression test for destruction-order bugs in the help line)
+//   --stress SECONDS     show the editor on the desktop, run the real message loop and fuzz every
+//                        parameter (and process audio) from a background thread, like a host would
 //
 // Run under a display, e.g.  xvfb-run -a verdant_ui_snapshot --out /tmp/ui --page soil
 #include <cmath>
@@ -31,12 +37,13 @@ namespace
 struct Options
 {
     juce::File outDir = juce::File::getCurrentWorkingDirectory();
-    juce::String name, page = "garden", choices, helpFor;
+    juce::String name, page = "garden", choices, helpFor, savePreset;
     juce::StringArray sets;
     int width = 1000, frames = 150, seq = 0, fakePresets = 0, bench = 200;
     float level = 0.7f;
     double audioSeconds = 0.0;
-    bool browser = false, realMeters = false, stutter = false;
+    bool browser = false, realMeters = false, stutter = false, hoverAll = false;
+    double stressSeconds = 0.0;
 };
 
 Options parse (const juce::StringArray& args)
@@ -53,6 +60,7 @@ Options parse (const juce::StringArray& args)
         else if (a == "--width")         o.width = next().getIntValue();
         else if (a == "--page")          o.page = next().toLowerCase();
         else if (a == "--browser")       o.browser = true;
+        else if (a == "--save-preset")   o.savePreset = next();
         else if (a == "--fake-presets")  o.fakePresets = next().getIntValue();
         else if (a == "--choices")       o.choices = next();
         else if (a == "--help-for")      o.helpFor = next();
@@ -64,6 +72,8 @@ Options parse (const juce::StringArray& args)
         else if (a == "--real-meters")   o.realMeters = true;
         else if (a == "--stutter")       o.stutter = true;
         else if (a == "--bench")         o.bench = next().getIntValue();
+        else if (a == "--hover-all")     o.hoverAll = true;
+        else if (a == "--stress")        o.stressSeconds = next().getDoubleValue();
         else std::fprintf (stderr, "unknown argument: %s\n", a.toRawUTF8());
     }
 
@@ -106,6 +116,76 @@ void simulateMeters (verdant::Meters& m, int frame, float level)
             m.arpDegree.store ((frame / 5) * 3 % 16);
             m.arpPulse.fetch_add (1);
         }
+    }
+}
+
+// Mimics a host automating everything while the editor is open: a background thread sets
+// random values on every parameter and runs audio; the message thread runs the real UI.
+struct Fuzzer final : public juce::Thread
+{
+    explicit Fuzzer (VerdantProcessor& p) : juce::Thread ("fuzz"), processor (p) {}
+
+    void run() override
+    {
+        juce::Random r (0x5eed);
+        juce::AudioBuffer<float> buffer (2, 256);
+        juce::MidiBuffer midi;
+
+        while (! threadShouldExit())
+        {
+            for (auto* p : processor.getParameters())
+                p->setValue (r.nextFloat());
+
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < buffer.getNumSamples(); ++i)
+                    buffer.setSample (ch, i, (r.nextFloat() - 0.5f) * 0.5f);
+
+            processor.processBlock (buffer, midi);
+            ++iterations;
+            wait (5);
+        }
+    }
+
+    VerdantProcessor& processor;
+    std::atomic<int> iterations { 0 };
+};
+
+struct StressDriver final : public juce::Timer
+{
+    StressDriver (VerdantEditor& e, double seconds) : editor (e), endTime (juce::Time::getMillisecondCounterHiRes() + seconds * 1000.0) {}
+
+    void timerCallback() override
+    {
+        // exercise the stateful bits of the UI while everything is being automated
+        ++ticks;
+        if (ticks % 7 == 0)   editor.setPage (ticks / 7 % 2);
+        if (ticks % 11 == 0)  editor.setPresetBrowserOpen ((ticks / 11) % 2 == 0);
+        if (ticks % 13 == 0)  editor.debugOpenChoiceList (ticks % 2 == 0 ? verdant::pScale : verdant::pKey);
+        if (ticks % 17 == 0)  editor.setSize (750 + (ticks * 37) % 900, juce::roundToInt ((750 + (ticks * 37) % 900) * 0.66));
+
+        if (juce::Time::getMillisecondCounterHiRes() >= endTime)
+        {
+            stopTimer();
+            juce::MessageManager::getInstance()->stopDispatchLoop();
+        }
+    }
+
+    VerdantEditor& editor;
+    double endTime;
+    int ticks = 0;
+};
+
+void hoverEverything (juce::Component& root)
+{
+    // reverse order, so the last component left "hovered" is one of the first children
+    for (int i = root.getNumChildComponents(); --i >= 0;)
+    {
+        auto* child = root.getChildComponent (i);
+        const juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), {}, {}, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                  child, child, juce::Time::getCurrentTime(), {}, juce::Time::getCurrentTime(), 0, false);
+        child->mouseEnter (e);
+        child->mouseMove (e);
+        hoverEverything (*child);
     }
 }
 
@@ -190,6 +270,26 @@ int main (int argc, char* argv[])
 
         const int width = juce::jlimit (300, 4000, options.width);
         editor->setSize (width, juce::roundToInt (width * 0.66));
+
+        if (options.stressSeconds > 0.0)
+        {
+            editor->addToDesktop (0);
+            editor->setVisible (true);
+
+            Fuzzer fuzzer (*processor);
+            StressDriver driver (*editor, options.stressSeconds);
+            fuzzer.startThread();
+            driver.startTimer (40);
+            juce::MessageManager::getInstance()->runDispatchLoop();
+            fuzzer.stopThread (2000);
+
+            hoverEverything (*editor);
+            std::printf ("stress: %d fuzz iterations, %d UI ticks, visual painted %d times\n",
+                         fuzzer.iterations.load(), driver.ticks, editor->getActiveVisual().getPaintStats().frames);
+            editor->removeFromDesktop();
+            return 0;
+        }
+
         editor->setPage (options.page == "soil" ? VerdantEditor::soil : VerdantEditor::garden);
 
         if (options.fakePresets > 0)
@@ -230,6 +330,9 @@ int main (int argc, char* argv[])
         if (options.browser)
             editor->setPresetBrowserOpen (true);
 
+        if (options.savePreset.isNotEmpty())
+            editor->debugSavePreset (options.savePreset);
+
         if (options.choices.isNotEmpty())
         {
             const int index = verdant::findParam (options.choices.toRawUTF8());
@@ -262,6 +365,9 @@ int main (int argc, char* argv[])
             runFrames (1);
             writePng (snapshot(), options.outDir.getChildFile (options.name + "_" + juce::String (i).paddedLeft ('0', 3) + ".png"));
         }
+
+        if (options.hoverAll)
+            hoverEverything (*editor);
 
         // ---- paint timing of the generative visual (software renderer, into an image)
         if (options.bench > 0)
@@ -296,8 +402,8 @@ int main (int argc, char* argv[])
             }
             const double fullMs = (juce::Time::getMillisecondCounterHiRes() - t0) / double (fullFrames);
 
-            std::printf ("visual %d x %d: paint avg %.2f ms, max %.2f ms over %d frames; whole editor repaint %.2f ms\n",
-                         visual.getWidth(), visual.getHeight(), stats.averageMs, stats.maxMs, stats.frames, fullMs);
+            std::printf ("visual %d x %d: paint median %.2f ms, avg %.2f, min %.2f, max %.2f over %d frames; whole editor repaint %.2f ms\n",
+                         visual.getWidth(), visual.getHeight(), stats.medianMs, stats.averageMs, stats.minMs, stats.maxMs, stats.frames, fullMs);
         }
     }
 

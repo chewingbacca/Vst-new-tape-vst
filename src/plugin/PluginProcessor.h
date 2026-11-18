@@ -30,7 +30,7 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 30.0; }
+    double getTailLengthSeconds() const override;
 
     //==============================================================================
     int getNumPrograms() override;
@@ -73,6 +73,7 @@ private:
 
     int currentProgram = 0;
     juce::String currentPresetName;
+    juce::AudioBuffer<float> scratch;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VerdantProcessor)
 };

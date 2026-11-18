@@ -337,7 +337,7 @@ private:
 
         const float r = rate;
         double lag = double (kGrainLag) + double (std::max (0.0f, r - 1.0f)) * double (grainLen) + lagStretch;
-        const bool unity = (r == 1.0f) && (lag == std::floor (lag)) && texture <= 0.0f;
+        const bool unity = std::abs (r - 1.0f) < 1.0e-9f && std::abs (lag - std::floor (lag)) < 1.0e-9 && texture <= 0.0f;
 
         // Waveform-similarity alignment (WSOLA, Verhelst & Roelands 1993): when the grains do
         // not all read the same spot (varispeed or stretch), slide the new grain back by up to

@@ -93,6 +93,9 @@ VerdantProcessor::VerdantProcessor()
 
     currentPresetName = factoryPresets().front().name;
     applyValues (factoryPresets().front().resolve());
+
+    // Announce a plausible latency straight away; prepareToPlay() sets the exact value.
+    setLatencySamples (Engine::latencyForSampleRate (48000.0));
 }
 
 //==============================================================================
@@ -100,17 +103,21 @@ bool VerdantProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto in  = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
+    const auto mono = juce::AudioChannelSet::mono(), stereo = juce::AudioChannelSet::stereo();
 
-    if (out != juce::AudioChannelSet::stereo())
-        return false;
-
-    return in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo();
+    // stereo -> stereo, mono -> stereo and (for mono tracks in hosts that insist) mono -> mono
+    if (out == stereo) return in == mono || in == stereo;
+    if (out == mono)   return in == mono;
+    return false;
 }
 
 void VerdantProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.prepare (sampleRate, samplesPerBlock);
     setLatencySamples (engine.latencySamples());
+
+    // The engine always works in stereo; this scratch buffer serves mono layouts.
+    scratch.setSize (2, juce::jmax (64, samplesPerBlock), false, false, true);
 }
 
 void VerdantProcessor::reset()
@@ -124,16 +131,10 @@ void VerdantProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
     const int n = buffer.getNumSamples();
     const int numIn = getTotalNumInputChannels();
+    const int numOut = getTotalNumOutputChannels();
     const int numCh = buffer.getNumChannels();
-    if (n == 0 || numCh < 2)
+    if (n == 0 || numCh == 0)
         return;
-
-    // Mono input feeds both sides.
-    if (numIn < 2)
-        buffer.copyFrom (1, 0, buffer, 0, 0, n);
-
-    for (int ch = 2; ch < numCh; ++ch)
-        buffer.clear (ch, 0, n);
 
     ParamValues pv;
     for (int i = 0; i < kNumParams; ++i)
@@ -155,13 +156,60 @@ void VerdantProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
         }
     }
 
-    engine.process (buffer.getWritePointer (0), buffer.getWritePointer (1), n, transport);
+    if (numCh >= 2 && numOut >= 2)
+    {
+        // Mono input feeds both sides.
+        if (numIn < 2)
+            buffer.copyFrom (1, 0, buffer, 0, 0, n);
+
+        for (int ch = 2; ch < numCh; ++ch)
+            buffer.clear (ch, 0, n);
+
+        engine.process (buffer.getWritePointer (0), buffer.getWritePointer (1), n, transport);
+        return;
+    }
+
+    // Mono in / mono out: run the stereo engine on a scratch buffer and fold down.
+    // Processed in pieces so a host sending more than the announced block size is still safe.
+    const int cap = scratch.getNumSamples();
+    if (cap == 0)
+        return;     // not prepared
+    auto* mono = buffer.getWritePointer (0);
+    const double beatsPerSample = transport.bpm / (60.0 * getSampleRate());
+    for (int done = 0; done < n;)
+    {
+        const int m = juce::jmin (cap, n - done);
+        auto* l = scratch.getWritePointer (0);
+        auto* r = scratch.getWritePointer (1);
+        juce::FloatVectorOperations::copy (l, mono + done, m);
+        juce::FloatVectorOperations::copy (r, mono + done, m);
+        engine.process (l, r, m, transport);
+        for (int i = 0; i < m; ++i)
+            mono[done + i] = 0.5f * (l[i] + r[i]);
+        done += m;
+        transport.ppq += double (m) * beatsPerSample;
+    }
 }
 
 //==============================================================================
 juce::AudioProcessorEditor* VerdantProcessor::createEditor()
 {
     return new VerdantEditor (*this);
+}
+
+//==============================================================================
+double VerdantProcessor::getTailLengthSeconds() const
+{
+    // Used by hosts for offline bounces and "stop when silent": follow the reverb decay.
+    const bool revOn = raw[pRevOn]->load() >= 0.5f;
+    const float decay = raw[pRevDecay]->load();
+    if (revOn && (decay > kRevDecayInf || raw[pRevFreeze]->load() >= 0.5f))
+        return 60.0;
+
+    double tail = 6.0;      // grains and arp linger
+    if (revOn)
+        tail += 1.3 * double (decay) * double (macroScale (raw[pMoisture]->load(), 0.4f, 2.5f));
+    return juce::jlimit (3.0, 60.0, tail);
 }
 
 //==============================================================================
@@ -331,6 +379,19 @@ void VerdantProcessor::setStateInformation (const void* data, int sizeInBytes)
             editorHeight = int (state.getProperty ("editorHeight", 0));
             editorPage   = int (state.getProperty ("editorPage", 0));
             apvts.replaceState (state);
+
+            // replaceState() leaves a parameter alone when its *snapped* value already matches
+            // the state. A host may have left a Bool at an un-snapped value such as 0.8
+            // (AudioParameterBool stores what it is given), so re-assert every parameter;
+            // otherwise the host-visible value is not restored (pluginval: "not restored on
+            // setStateInformation").
+            for (int i = 0; i < kNumParams; ++i)
+            {
+                auto* p = params[size_t (i)];
+                const float norm = p->convertTo0to1 (raw[size_t (i)]->load());
+                if (std::abs (p->getValue() - norm) > 1.0e-6f)
+                    p->setValueNotifyingHost (norm);
+            }
         }
     }
 }

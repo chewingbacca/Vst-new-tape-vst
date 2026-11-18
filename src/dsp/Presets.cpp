@@ -75,6 +75,15 @@ const std::vector<FactoryPreset>& factoryPresets()
             { pRevDecay, 7.0f }, { pRevPredelay, 45.0f }, { pRevShimmer, 0.18f }, { pRevDamping, 7500.0f },
             { pOutDuck, 0.40f } } },
 
+        { "Lydian Canopy", "Lush",
+          "Pitch Track on: a slow Lydian chord blooms from whatever note you play. Set Key first.",
+          { { pMoisture, 0.58f }, { pSunlight, 0.58f }, { pMix, 0.54f }, { pScale, Lydian }, { pKey, 0 }, { pArpTrack, on },
+            { pGrainMix, 0.35f }, { pGrainSize, 280.0f }, { pGrainShape, 1.0f },
+            { pArpMix, 0.50f }, { pArpPattern, Bloom }, { pArpRate, Div8 }, { pArpRange, 2 }, { pArpGate, 2.0f },
+            { pArpWash, 0.65f }, { pArpShimmer, 0.30f }, { pArpHold, 0.75f },
+            { pChorusMix, 0.45f }, { pChorusVoices, 12 },
+            { pRevDecay, 9.0f }, { pRevSize, 0.70f }, { pRevShimmer, 0.22f } } },
+
         // ================================================================== SUBTLE
         { "Morning Dew", "Subtle",
           "A few bright droplets around the note and a short, clear room.",
@@ -185,6 +194,15 @@ const std::vector<FactoryPreset>& factoryPresets()
             { pChorusMix, 0.55f }, { pChorusVoices, 10 }, { pChorusRate, 0.22f }, { pChorusDepth, 0.80f },
             { pRevDecay, 6.5f }, { pRevMod, 0.80f }, { pRevShimmer, 0.12f } } },
 
+        { "Pentatonic Rain", "Motion",
+          "Pitch Track on: set Key to your song and every droplet lands on the major pentatonic.",
+          { { pMix, 0.52f }, { pScale, MajPent }, { pKey, 0 }, { pArpTrack, on },
+            { pGrainMix, 0.30f }, { pGrainDensity, 6.0f }, { pGrainSize, 80.0f }, { pGrainShape, 0.20f },
+            { pArpMix, 0.60f }, { pArpPattern, Random }, { pArpRate, Div16 }, { pArpRange, 2 }, { pArpGate, 0.9f },
+            { pArpWash, 0.40f }, { pArpShimmer, 0.35f }, { pArpHold, 0.70f },
+            { pChorusMix, 0.35f },
+            { pRevDecay, 5.0f }, { pRevShimmer, 0.15f } } },
+
         // ================================================================== DEEP
         { "Root Cellar", "Deep",
           "An octave down on tape, low grains and a dark stone room. Heavy and slow.",
@@ -281,24 +299,6 @@ const std::vector<FactoryPreset>& factoryPresets()
             { pRevDecay, 24.0f }, { pRevSize, 0.90f }, { pRevShimmer, 0.40f }, { pRevShimmerPitch, ShTwoOct },
             { pRevDamping, 12000.0f }, { pOutDuck, 0.40f } } },
 
-        // ================================================================== IN KEY (pitch tracking)
-        { "Pentatonic Rain", "Motion",
-          "Pitch Track on: set Key to your song and every droplet lands on the major pentatonic.",
-          { { pMix, 0.52f }, { pScale, MajPent }, { pKey, 0 }, { pArpTrack, on },
-            { pGrainMix, 0.30f }, { pGrainDensity, 6.0f }, { pGrainSize, 80.0f }, { pGrainShape, 0.20f },
-            { pArpMix, 0.60f }, { pArpPattern, Random }, { pArpRate, Div16 }, { pArpRange, 2 }, { pArpGate, 0.9f },
-            { pArpWash, 0.40f }, { pArpShimmer, 0.35f }, { pArpHold, 0.70f },
-            { pChorusMix, 0.35f },
-            { pRevDecay, 5.0f }, { pRevShimmer, 0.15f } } },
-
-        { "Lydian Canopy", "Lush",
-          "Pitch Track on: a slow Lydian chord blooms from whatever note you play. Set Key first.",
-          { { pMoisture, 0.58f }, { pSunlight, 0.58f }, { pMix, 0.54f }, { pScale, Lydian }, { pKey, 0 }, { pArpTrack, on },
-            { pGrainMix, 0.35f }, { pGrainSize, 280.0f }, { pGrainShape, 1.0f },
-            { pArpMix, 0.50f }, { pArpPattern, Bloom }, { pArpRate, Div8 }, { pArpRange, 2 }, { pArpGate, 2.0f },
-            { pArpWash, 0.65f }, { pArpShimmer, 0.30f }, { pArpHold, 0.75f },
-            { pChorusMix, 0.45f }, { pChorusVoices, 12 },
-            { pRevDecay, 9.0f }, { pRevSize, 0.70f }, { pRevShimmer, 0.22f } } },
     };
     return presets;
 }

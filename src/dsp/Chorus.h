@@ -110,7 +110,7 @@ public:
             const float gt = i < nVoices ? 1.0f : 0.0f;
             if (first) v.gain = gt;
             v.gain += voiceCoef * (gt - v.gain);
-            if (v.gain < 1.0e-4f && gt == 0.0f) { v.gain = 0.0f; }
+            if (v.gain < 1.0e-4f && gt < 0.5f) { v.gain = 0.0f; }
 
             const float f = rate * v.rateMul;
             v.phase += f * dt;            v.phase -= std::floor (v.phase);
