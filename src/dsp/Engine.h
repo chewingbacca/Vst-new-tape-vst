@@ -9,6 +9,7 @@
 
 #include <atomic>
 
+#include "Arp.h"
 #include "GrainCloud.h"
 #include "Modulation.h"
 #include "Output.h"
@@ -75,12 +76,13 @@ private:
 
     // ---- smoothed macro / global controls
     Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
-    Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix;
-    Smooth sGrainMix;
+    Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix, rArpDirect, rArpSend;
+    Smooth sGrainMix, sArpMix, sArpWash;
 
     // ---- modules
     Tape tape;
     GrainCloud grain;
+    Arp arp;
     OutputTone tone;
     Limiter limiter;
 

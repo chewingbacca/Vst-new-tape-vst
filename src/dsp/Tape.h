@@ -120,7 +120,7 @@ public:
         texture = clampf (std::abs (rate - 1.0f) * 4.0f + (stretch - 1.0f), 0.0f, 1.0f);
 
         // stretch cycle: the head snaps back to "now" once per bar
-        const int cycle = int (std::floor (c.beat / 4.0));
+        const int cycle = int (std::floor ((c.beat + 1.0e-7) / 4.0));
         if (cycle != lastCycle) { lastCycle = cycle; lagStretch = 0.0; }
         if (stretch <= 1.001f) lagStretch = 0.0;
         maxStretchLag = double (7.0f * sr) - double (grainLen) * 2.5;
@@ -189,7 +189,7 @@ public:
         // ---- stutter trigger (on its own beat grid)
         const double sliceBeats = kStutterBeats[clampi (c.stutterLen, 0, 6)];
         const double gridBeats = sliceBeats > 0.0 ? sliceBeats : 0.5;
-        const int grid = int (std::floor (c.beat / gridBeats));
+        const int grid = int (std::floor ((c.beat + 1.0e-7) / gridBeats));
         if (grid != lastGrid)
         {
             const bool jumpedFar = lastGrid >= 0 && std::abs (grid - lastGrid) > 1;

@@ -10,6 +10,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
 
     tape.prepare (sr);
     grain.prepare (sr);
+    arp.prepare (sr);
     tone.prepare (sr);
     limiter.prepare (sr);
 
@@ -29,6 +30,8 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sWidth.setTime (0.05f, tickRate);
     sDuck.setTime (0.05f, tickRate);
     sGrainMix.setTime (0.04f, tickRate);
+    sArpMix.setTime (0.04f, tickRate);
+    sArpWash.setTime (0.04f, tickRate);
 
     bandLo.setCutoff (250.0f, sr);
     bandHi.setCutoff (2500.0f, sr);
@@ -42,6 +45,7 @@ void Engine::reset()
 {
     tape.reset();
     grain.reset();
+    arp.reset();
     tone.reset();
     limiter.reset();
     for (auto& d : dryDelay) d.clear();
@@ -76,7 +80,6 @@ void Engine::controlTick()
     const float sunlight = sSunlight.tick(), roots = sRoots.tick();
     const float mix = sMix.tick(), byp = sBypass.tick(), outGain = sOutGain.tick();
     const float width = sWidth.tick(), duck = sDuck.tick();
-    (void) moisture;
 
     // ---- modulation sources
     const float growthRate = macroScale (growth, 0.2f, 5.0f);
@@ -135,6 +138,33 @@ void Engine::controlTick()
         rGrainMix.begin (sGrainMix.tick(), kChunk);
     }
 
+    // ---- arp / shimmer
+    {
+        Arp::Controls c;
+        c.on = p[pArpOn] >= 0.5f;
+        c.rate = int (p[pArpRate] + 0.5f);
+        c.pattern = int (p[pArpPattern] + 0.5f);
+        c.range = int (p[pArpRange] + 0.5f);
+        c.gate = p[pArpGate];
+        c.sparkle = clampf (p[pArpShimmer] + 0.3f * std::max (0.0f, macroBipolar (sunlight)), 0.0f, 1.0f);
+        c.hold = p[pArpHold];
+        c.track = p[pArpTrack] >= 0.5f;
+        c.key = int (p[pKey] + 0.5f);
+        c.scale = int (p[pScale] + 0.5f);
+        c.beat = beat;
+        c.samplesPerBeat = samplesPerBeat;
+        arp.control (c);
+
+        sArpMix.set (clampf (p[pArpMix] * macroScale (bloom, 0.3f, 1.5f), 0.0f, 1.25f));
+        sArpWash.set (clampf (p[pArpWash] + 0.3f * macroBipolar (moisture), 0.0f, 1.0f));
+        if (firstBlock) { sArpMix.snap (sArpMix.target); sArpWash.snap (sArpWash.target); }
+        const float am = sArpMix.tick(), wash = sArpWash.tick();
+        const float direct = am * std::cos (wash * 0.5f * kPi), send = am * std::sin (wash * 0.5f * kPi);
+        if (firstBlock) { rArpDirect.snap (direct); rArpSend.snap (send); }
+        rArpDirect.begin (direct, kChunk);
+        rArpSend.begin (send, kChunk);
+    }
+
     // ---- output tone
     {
         const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
@@ -160,13 +190,16 @@ void Engine::controlTick()
 
     meters.envelope.store (follower.shaped(), std::memory_order_relaxed);
     meters.stutterPulse.store (tape.stutterEvents, std::memory_order_relaxed);
+    meters.arpPulse.store (arp.noteCount, std::memory_order_relaxed);
+    meters.arpDegree.store (arp.lastDegree, std::memory_order_relaxed);
+    meters.pitchHz.store (arp.pitchHz(), std::memory_order_relaxed);
     meters.grainPulse.store (grain.spawnCount, std::memory_order_relaxed);
     meters.grainActivity.store (clampf (grain.activity, 0.0f, 1.0f), std::memory_order_relaxed);
 }
 
 void Engine::processChunk (float* l, float* r, int n)
 {
-    float inL[kChunk] = {}, inR[kChunk] = {}, tL[kChunk], tR[kChunk], gL[kChunk], gR[kChunk], duckG[kChunk];
+    float inL[kChunk] = {}, inR[kChunk] = {}, tL[kChunk], tR[kChunk], gL[kChunk], gR[kChunk], aL[kChunk], aR[kChunk], duckG[kChunk];
 
     // ---- input: followers, bypass gate
     for (int i = 0; i < n; ++i)
@@ -189,6 +222,9 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- grain cloud (reads the tape output)
     grain.process (tL, tR, gL, gR, n);
 
+    // ---- arp (records the tape output while it sounds)
+    arp.process (tL, tR, aL, aR, n);
+
     // ---- output
     const int dryLag = tape.nominalDelay();
     const int bypLag = latencySamples();
@@ -196,8 +232,9 @@ void Engine::processChunk (float* l, float* r, int n)
     for (int i = 0; i < n; ++i)
     {
         const float gm = rGrainMix.next() * duckG[i];
-        float wetL = tL[i] + gm * gL[i];
-        float wetR = tR[i] + gm * gR[i];
+        const float ad = rArpDirect.next() * duckG[i], as = rArpSend.next();
+        float wetL = tL[i] + gm * gL[i] + (ad + as) * aL[i];
+        float wetR = tR[i] + gm * gR[i] + (ad + as) * aR[i];
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));

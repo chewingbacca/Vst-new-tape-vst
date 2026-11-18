@@ -168,6 +168,10 @@ inline Stereo pluck (double sr, double seconds, double midi = 52.0, float amp = 
     verdant::Rng rng; rng.seed (99);
     float lpn = 0.0f;
     for (auto& v : line) { lpn += 0.5f * (rng.bi() - lpn); v = lpn; }
+    float mean = 0.0f;
+    for (auto v : line) mean += v;
+    mean /= float (N);
+    for (auto& v : line) v -= mean;   // no DC in the string
     const size_t start = size_t (0.05 * sr);
     int idx = 0;
     float prev = 0.0f;
