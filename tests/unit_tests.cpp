@@ -480,6 +480,29 @@ TEST (grain_cloud_is_silent_for_silence_and_loudness_is_normalised)
     }
 }
 
+TEST (grain_upward_transposition_is_band_limited)
+{
+    // +24 semitones turns 9 kHz into 36 kHz, which cannot exist at 48 kHz: it must be filtered
+    // out before the grain is read instead of folding back down as an inharmonic alias.
+    const float sr = 48000.0f;
+    const int N = int (sr) * 3;
+    auto cloudRms = [&] (float hz)
+    {
+        GrainCloud g;
+        g.prepare (sr);
+        GrainCloud::Controls c;
+        c.pitchSemis = 24.0f; c.spread = 0.0f; c.reverse = 0.0f; c.density = 20.0f; c.sizeMs = 200.0f; c.shape = 1.0f;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * hz * float (i) / sr);
+        runBlocks (N, [&] (int) { g.control (c); },
+                   [&] (int pos, int n) { g.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        return rmsOf (oL.data() + N / 2, N / 2);
+    };
+    const double ok = cloudRms (3000.0f), aliasing = cloudRms (9000.0f);
+    CHECK (ok > 0.05);                                   // 3 kHz -> 12 kHz comes through
+    CHECK (20.0 * std::log10 (aliasing / ok) < -18.0);   // 9 kHz -> would-be alias is suppressed
+}
+
 //==============================================================================
 TEST (pitch_tracker_is_accurate_and_ignores_noise)
 {

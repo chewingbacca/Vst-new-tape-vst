@@ -37,6 +37,13 @@ public:
         sr = sampleRate;
         tickRate = sr / 32.0f;
         cap.prepare (int (8.3f * sr));
+        capA.prepare (int (8.3f * sr));
+        capB.prepare (int (8.3f * sr));
+        // Grains transposed upwards read a band-limited copy (4th-order Butterworth), so even
+        // a two-octave jump of bright material stays below Nyquist: no aliasing in the sparkle.
+        //   ratio <= 1.3 : full band     ratio <= 2.2 : 0.20 fs     above : 0.11 fs
+        aaA1.set (0.20f * sr, 0.5412f, sr); aaA2.set (0.20f * sr, 1.3066f, sr);
+        aaB1.set (0.11f * sr, 0.5412f, sr); aaB2.set (0.11f * sr, 1.3066f, sr);
         fbRing.prepare (128);
         fbHp.setCutoff (140.0f, sr);
         fbLp.setCutoff (6500.0f, sr);
@@ -50,6 +57,8 @@ public:
     {
         rng.seed (0x51A7B0u);
         cap.clear();
+        capA.clear(); capB.clear();
+        aaA1.reset(); aaA2.reset(); aaB1.reset(); aaB2.reset();
         fbRing.clear();
         fbHp.reset(); fbLp.reset();
         for (auto& g : grains) g.active = false;
@@ -97,6 +106,8 @@ public:
                 x += fbGain * softClip (fb);
             }
             cap.push (x);
+            capA.push (aaA2.low (aaA1.low (x)));
+            capB.push (aaB2.low (aaB1.low (x)));
             outL[i] = 0.0f;
             outR[i] = 0.0f;
         }
@@ -128,6 +139,7 @@ public:
             ++numActive;
             int i = g.startOffset;
             g.startOffset = 0;
+            const Ring& src = g.band == 0 ? cap : (g.band == 1 ? capA : capB);
             for (; i < n; ++i)
             {
                 float w;
@@ -138,7 +150,7 @@ public:
                     const float f = hann (0.5f + 0.5f * (g.ph - g.attack) * g.invRelease);
                     w = f + (f * f * f - f) * g.pluck;
                 }
-                const float s = w * cap.readHermite (g.pos);
+                const float s = w * src.readHermite (g.pos);
                 outL[i] += s * g.gl;
                 outR[i] += s * g.gr;
                 g.pos += g.inc;
@@ -164,7 +176,7 @@ private:
     struct Grain
     {
         bool active = false;
-        int startOffset = 0;
+        int startOffset = 0, band = 0;
         double pos = 0.0, inc = 1.0;
         float ph = 0.0f, phInc = 0.0f;
         float gl = 0.7f, gr = 0.7f;
@@ -221,6 +233,7 @@ private:
         const double now = double (wAbs - 1 - (blockLen - 1 - offsetInBlock));
         g.pos = now - offset;
         g.inc = rev ? -double (ratio) : double (ratio);
+        g.band = ratio <= 1.3f ? 0 : (ratio <= 2.2f ? 1 : 2);
         g.ph = 0.0f;
         g.phInc = 1.0f / lenSamples;
         g.startOffset = offsetInBlock;
@@ -246,7 +259,8 @@ private:
     Controls ctl;
     Rng rng;
 
-    Ring cap, fbRing;
+    Ring cap, capA, capB, fbRing;
+    Svf aaA1, aaA2, aaB1, aaB2;
     int64_t wAbs = 0;
     double untilNext = 0.0, minOffset = 40.0;
     std::array<Grain, kMaxGrains> grains;
