@@ -12,6 +12,7 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     grain.prepare (sr);
     arp.prepare (sr);
     chorus.prepare (sr);
+    reverb.prepare (sr);
     tone.prepare (sr);
     limiter.prepare (sr);
 
@@ -33,6 +34,8 @@ void Engine::prepare (double sampleRate, int /*maxBlockSize*/)
     sGrainMix.setTime (0.04f, tickRate);
     sArpMix.setTime (0.04f, tickRate);
     sArpWash.setTime (0.04f, tickRate);
+    sRevMix.setTime (0.04f, tickRate);
+    sRevOn.setTime (0.03f, tickRate);
 
     bandLo.setCutoff (250.0f, sr);
     bandHi.setCutoff (2500.0f, sr);
@@ -48,6 +51,7 @@ void Engine::reset()
     grain.reset();
     arp.reset();
     chorus.reset();
+    reverb.reset();
     tone.reset();
     limiter.reset();
     for (auto& d : dryDelay) d.clear();
@@ -181,6 +185,37 @@ void Engine::controlTick()
         chorus.control (c);
     }
 
+    // ---- reverb
+    {
+        Reverb::Controls c;
+        c.on = p[pRevOn] >= 0.5f;
+        c.size = clampf (p[pRevSize] * macroScale (moisture, 0.8f, 1.2f), 0.0f, 1.0f);
+        c.infinite = p[pRevDecay] > kRevDecayInf;
+        c.decaySec = p[pRevDecay] * macroScale (moisture, 0.4f, 2.5f);
+        c.predelayMs = p[pRevPredelay];
+        c.dampHz = clampf (p[pRevDamping] * macroScale (sunlight, 0.4f, 2.2f), 300.0f, 20000.0f);
+        c.lowCutHz = p[pRevLowCut] * macroScale (roots, 2.0f, 0.5f);
+        c.mod = clampf (p[pRevMod] * (1.0f + 0.3f * driftVal[3]), 0.0f, 1.0f);
+        c.modRate = macroScale (growth, 0.4f, 2.5f);
+        c.diffusion = p[pRevDiffusion];
+        c.shimmer = clampf (p[pRevShimmer] * macroScale (bloom, 0.4f, 1.5f) + 0.3f * std::max (0.0f, macroBipolar (sunlight))
+                            + 0.15f * touch * env, 0.0f, 1.0f);
+        c.shimmerPitch = int (p[pRevShimmerPitch] + 0.5f);
+        c.freeze = p[pRevFreeze] >= 0.5f;
+        reverb.control (c);
+
+        sRevOn.set (c.on ? 1.0f : 0.0f);
+        sRevMix.set (clampf (p[pRevMix] * macroScale (moisture, 0.25f, 1.6f), 0.0f, 1.0f));
+        if (firstBlock) { sRevOn.snap (sRevOn.target); sRevMix.snap (sRevMix.target); }
+        const float ron = sRevOn.tick();
+        const float rm = sRevMix.tick() * ron;
+        const float rd = std::cos (rm * 0.5f * kPi), rw = std::sin (rm * 0.5f * kPi);
+        if (firstBlock) { rRevDry.snap (rd); rRevWet.snap (rw); rRevOff.snap (1.0f - ron); }
+        rRevDry.begin (rd, kChunk);
+        rRevWet.begin (rw, kChunk);
+        rRevOff.begin (1.0f - ron, kChunk);
+    }
+
     // ---- output tone
     {
         const float tiltDb = clampf (6.0f * p[pOutTilt] + 4.5f * macroBipolar (sunlight) + 1.0f * driftVal[3], -9.0f, 9.0f);
@@ -256,14 +291,25 @@ void Engine::processChunk (float* l, float* r, int n)
     // ---- chorus
     chorus.process (bL, bR, n);
 
+    // ---- reverb (fed by the chorused bus plus the arp wash)
+    float rvInL[kChunk] = {}, rvInR[kChunk] = {}, rvL[kChunk], rvR[kChunk];
+    for (int i = 0; i < n; ++i)
+    {
+        rvInL[i] = bL[i] + sL[i];
+        rvInR[i] = bR[i] + sR[i];
+    }
+    reverb.process (rvInL, rvInR, rvL, rvR, n);
+
     // ---- output
     const int dryLag = tape.nominalDelay();
     const int bypLag = latencySamples();
 
     for (int i = 0; i < n; ++i)
     {
-        float wetL = bL[i] + sL[i];
-        float wetR = bR[i] + sR[i];
+        const float rd = rRevDry.next(), rw = rRevWet.next() * duckG[i], roff = rRevOff.next();
+        // with the reverb switched off the arp wash is heard directly instead of vanishing
+        float wetL = (bL[i] + roff * sL[i]) * rd + rvL[i] * rw;
+        float wetR = (bR[i] + roff * sR[i]) * rd + rvR[i] * rw;
 
         tone.process (wetL, wetR, rWidth.next());
         meterWet = std::max (meterWet * 0.9995f, std::max (std::abs (wetL), std::abs (wetR)));

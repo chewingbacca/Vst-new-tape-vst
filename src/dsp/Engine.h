@@ -15,6 +15,7 @@
 #include "Modulation.h"
 #include "Output.h"
 #include "Params.h"
+#include "Reverb.h"
 #include "Tape.h"
 #include "Util.h"
 
@@ -78,13 +79,15 @@ private:
     // ---- smoothed macro / global controls
     Smooth sBloom, sGrowth, sMoisture, sSunlight, sRoots, sMix, sBypass, sOutGain, sWidth, sDuck;
     Ramp rDry, rWet, rBypass, rInGate, rWidth, rDuck, rGrainMix, rArpDirect, rArpSend;
-    Smooth sGrainMix, sArpMix, sArpWash;
+    Smooth sGrainMix, sArpMix, sArpWash, sRevMix, sRevOn;
+    Ramp rRevDry, rRevWet, rRevOff;
 
     // ---- modules
     Tape tape;
     GrainCloud grain;
     Arp arp;
     Chorus chorus;
+    Reverb reverb;
     OutputTone tone;
     Limiter limiter;
 
