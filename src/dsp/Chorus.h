@@ -86,7 +86,9 @@ public:
         const float mix = sMix.tick(), glass = sGlass.tick(), width = sWidth.tick();
         const float xover = sXover.tick(), rate = sRate.tick(), depth = sDepth.tick();
 
-        active = mix > 1.0e-4f || sMix.target > 0.0f;
+        // In glassy mode the resonant feedback path has memory, so it keeps running while the
+        // chorus is switched off; otherwise switching it back on would start from stale state.
+        active = mix > 1.0e-4f || sMix.target > 0.0f || glass > 1.0e-4f || sGlass.target > 0.0f;
 
         for (int c2 = 0; c2 < 2; ++c2)
         {
@@ -101,7 +103,7 @@ public:
         const int nVoices = std::clamp (c.voices, 1, kMaxVoices);
         const float dt = 1.0f / tickRate;
         float power = 0.0f;
-        int perSide[2] = { 0, 0 };
+        float gainSum[2] = { 0.0f, 0.0f };
         numRunning = 0;
 
         for (int i = 0; i < kMaxVoices; ++i)
@@ -137,13 +139,15 @@ public:
             {
                 running[numRunning++] = i;
                 power += v.gain * v.gain;
-                ++perSide[v.src];
+                gainSum[v.src] += v.gain;
             }
         }
 
         const float norm = std::sqrt (2.0f / std::max (power, 0.25f));
-        fbNorm[0] = perSide[0] > 0 ? 1.0f / float (perSide[0]) : 0.0f;
-        fbNorm[1] = perSide[1] > 0 ? 1.0f / float (perSide[1]) : 0.0f;
+        // feedback = gain-weighted mean of the taps: it follows the smoothed voice gains, so
+        // changing the voice count cannot step it (and loop gain stays <= fbAmount)
+        fbNorm[0] = 1.0f / std::max (gainSum[0], 1.0f);
+        fbNorm[1] = 1.0f / std::max (gainSum[1], 1.0f);
 
         const float dryG = std::cos (mix * 0.5f * kPi);
         const float wetG = std::sin (mix * 0.5f * kPi) * norm;

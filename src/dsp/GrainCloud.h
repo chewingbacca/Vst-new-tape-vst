@@ -47,7 +47,6 @@ public:
         fbRing.prepare (128);
         fbHp.setCutoff (140.0f, sr);
         fbLp.setCutoff (6500.0f, sr);
-        sNorm.setTime (0.08f, tickRate);
         sOn.setTime (0.03f, tickRate);
         sFb.setTime (0.05f, tickRate);
         minOffset = 40.0;
@@ -67,6 +66,7 @@ public:
         untilNext = 0.0;
         numActive = 0;
         first = true; firstFb = true;
+        lastDensity = 0.0f;
         spawnCount = 0;
         activity = 0.0f;
     }
@@ -77,17 +77,23 @@ public:
         ctl.density = clampf (c.density, 0.1f, 120.0f);
         ctl.sizeMs = clampf (c.sizeMs, 5.0f, 900.0f);
 
-        // loudness normalisation from the expected number of overlapping grains
+        // Loudness normalisation from the expected number of overlapping grains. It is baked
+        // into each grain when it is born (not applied to the whole cloud), so dropping the
+        // density or size cannot boost the grains that are already sounding.
         const float overlap = ctl.density * ctl.sizeMs * 0.001f;
         const float shapeEnergy = lerp (0.16f, 0.30f, clampf (c.shape, 0.0f, 1.0f)); // mean(w^2 * amp^2)
-        sNorm.set (std::min (1.5f, 1.0f / std::sqrt (std::max (1.0e-3f, shapeEnergy * overlap))));
-        sOn.set (c.on ? 1.0f : 0.0f);
-        if (first) { sNorm.snap (sNorm.target); sOn.snap (sOn.target); }
+        grainNorm = std::min (1.5f, 1.0f / std::sqrt (std::max (1.0e-3f, shapeEnergy * overlap)));
 
+        // a density change takes effect on the grain that is already scheduled
+        if (lastDensity > 0.0f && std::abs (ctl.density - lastDensity) > 1.0e-6f)
+            untilNext *= double (lastDensity / ctl.density);
+        lastDensity = ctl.density;
+
+        sOn.set (c.on ? 1.0f : 0.0f);
+        if (first) sOn.snap (sOn.target);
         const float on = sOn.tick();
-        const float g = sNorm.tick() * on;
-        if (first) { rGain.snap (g); first = false; }
-        rGain.begin (g, 32);
+        if (first) { rGain.snap (on); first = false; }
+        rGain.begin (on, 32);
         spawning = c.on;
         sFb.set (0.72f * clampf (c.feedback, 0.0f, 1.0f));
         if (firstFb) { sFb.snap (sFb.target); rFb.snap (sFb.target * on); firstFb = false; }
@@ -258,8 +264,8 @@ private:
         g.pluck = 1.0f - shape;
 
         const float ang = (pan + 1.0f) * 0.25f * kPi;
-        g.gl = amp * std::cos (ang) * 1.4142f;
-        g.gr = amp * std::sin (ang) * 1.4142f;
+        g.gl = amp * grainNorm * std::cos (ang) * 1.4142f;
+        g.gr = amp * grainNorm * std::sin (ang) * 1.4142f;
         g.active = true;
         ++spawnCount;
     }
@@ -279,7 +285,8 @@ private:
     OnePoleHP fbHp;
     OnePoleLP fbLp;
 
-    Smooth sNorm, sOn, sFb;
+    Smooth sOn, sFb;
+    float grainNorm = 1.0f, lastDensity = 0.0f;
     Ramp rGain, rFb;
     bool firstFb = true;
 };

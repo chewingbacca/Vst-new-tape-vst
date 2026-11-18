@@ -82,7 +82,7 @@ public:
         for (auto& f : tone) f.reset();
         for (auto& f : bump) f.reset();
         wAbs = 0; stAbs = 0;
-        hopCount = 0; nextGrain = 0;
+        hopCount = 0; nextGrain = 0; lastExtra = 0;
         // Start as if the grain engine had always been running: three older grains are
         // already part-way through their windows, so the overlap sums to one from the
         // first sample and the first note after a reset keeps its full attack.
@@ -183,9 +183,13 @@ public:
         }
 
         // ---- saturation
-        satPre  = lerp (0.5f, 5.0f, drive * drive);
-        satPost = (1.0f + 0.6f * drive) / satPre;
-        satEven = 0.30f * drive;      // asymmetry -> even harmonics; vanishes at silence (no DC bias)
+        const float satPre  = lerp (0.5f, 5.0f, drive * drive);
+        const float satPost = (1.0f + 0.6f * drive) / satPre;
+        const float satEven = 0.30f * drive;      // asymmetry -> even harmonics; vanishes at silence (no DC bias)
+        if (first) { rSatPre.snap (satPre); rSatPost.snap (satPost); rSatEven.snap (satEven); }
+        rSatPre.begin (satPre, 32);       // ramped per sample: moving Drive must not zipper
+        rSatPost.begin (satPost, 32);
+        rSatEven.begin (satEven, 32);
 
         // ---- age: tone, head bump, dropouts
         const float fc = 21000.0f * std::pow (0.15f, age);
@@ -283,6 +287,7 @@ public:
 
             const float drop = rDrop.next();
             const float mix = rMix.next();
+            const float satPre = rSatPre.next(), satPost = rSatPost.next(), satEven = rSatEven.next();
 
             for (int ch = 0; ch < 2; ++ch)
             {
@@ -339,46 +344,48 @@ private:
         nextGrain = (nextGrain + 1) % int (grains.size());
 
         const float r = rate;
+        const bool neutral = std::abs (r - 1.0f) < 1.0e-9f && lagStretch <= 0.0 && texture <= 0.0f;
         double lag = double (kGrainLag) + double (std::max (0.0f, r - 1.0f)) * double (grainLen) + lagStretch;
-        const bool unity = std::abs (r - 1.0f) < 1.0e-9f && std::abs (lag - std::floor (lag)) < 1.0e-9 && texture <= 0.0f;
 
-        // Waveform-similarity alignment (WSOLA, Verhelst & Roelands 1993): when the grains do
-        // not all read the same spot (varispeed or stretch), slide the new grain back by up to
-        // 12 ms to where it lines up best with what the previous grain is about to play. The
-        // overlaps then add in phase: a clean transposition instead of comb-filtered roughness.
-        if (! unity)
-        {
-            // keep the whole comparison window behind the write head (never read unwritten data)
-            lag += double (alignLen);
-            if (ref != nullptr)
-                lag += double (alignmentOffset (ref->pos, double (wAbs - 1) - lag));
-        }
+        // Waveform-similarity alignment (WSOLA, Verhelst & Roelands 1993). Whenever the new
+        // grain would not read exactly where the previous one does, it is slid back by up to
+        // 12 ms to the spot where the audio it has just passed best matches what the previous
+        // grain has just played. Overlapping grains then add in phase: a clean transposition
+        // instead of comb-filtered roughness, and no level dip when Speed or Stretch moves
+        // away from neutral.
+        int extra = 0;
+        if (! neutral)
+            extra = ref != nullptr ? alignmentOffset (ref->pos, double (wAbs - 1) - lag, alignLen) : 0;
+        else if (lastExtra > 0 && ref != nullptr)
+            // Back at neutral, but earlier grains still carry an alignment offset: walk it down
+            // in phase-aligned steps (at most 3/4 of the previous offset) until it is zero and
+            // the path is an exact delay again.
+            extra = alignmentOffset (ref->pos, double (wAbs - 1) - lag, (lastExtra * 3) / 4);
+        lastExtra = extra;
+        lag += double (extra);
 
         g.active = true;
         g.rate = r;
         g.ph = 0.0f;
         g.phInc = 1.0f / float (grainLen);
         g.pos = double (wAbs - 1) - lag;
-        g.unity = unity;
+        g.unity = std::abs (r - 1.0f) < 1.0e-9f && std::abs (lag - std::floor (lag)) < 1.0e-9;
     }
 
-    // Returns how many samples further back (0 .. alignLen) the new grain should start.
-    int alignmentOffset (double refPos, double newPos) const
+    // Returns how many samples further back (0 .. maxOffset) the new grain should start.
+    // Both comparison windows END at the grains' read positions, so only audio that has
+    // already been written is ever looked at.
+    int alignmentOffset (double refPos, double newPos, int maxOffset) const
     {
-        const int64_t newest = wAbs - 1;
-        const int64_t a0 = int64_t (refPos), b0 = int64_t (newPos);
-
-        // Only written samples may be compared. The candidate window always is (the caller
-        // added alignLen of lag); the reference grain can be closer to the head (e.g. it was a
-        // neutral grain), in which case the comparison is shortened or skipped.
-        const int corrLen = int (std::min<int64_t> (alignLen, std::min (newest - a0, newest - b0)));
-        if (corrLen < alignLen / 4)
+        if (maxOffset <= 0)
             return 0;
+
+        const int64_t a0 = int64_t (refPos) - alignLen, b0 = int64_t (newPos) - alignLen;
 
         auto score = [&] (int d)
         {
             float corr = 0.0f, energy = 1.0e-9f;
-            for (int j = 0; j < corrLen; j += alignStride)
+            for (int j = 0; j < alignLen; j += alignStride)
             {
                 const float a = cap[0].atAbs (a0 + j) + cap[1].atAbs (a0 + j);
                 const float b = cap[0].atAbs (b0 - d + j) + cap[1].atAbs (b0 - d + j);
@@ -391,12 +398,12 @@ private:
         // coarse search on a ~16 kHz grid, then refine around the winner at full resolution
         float bestScore = -1.0e30f;
         int best = 0;
-        for (int d = 0; d <= alignLen; d += alignStride)
+        for (int d = 0; d <= maxOffset; d += alignStride)
         {
             const float sc = score (d);
             if (sc > bestScore) { bestScore = sc; best = d; }
         }
-        const int lo = std::max (0, best - alignStride + 1), hi = std::min (alignLen, best + alignStride - 1);
+        const int lo = std::max (0, best - alignStride + 1), hi = std::min (maxOffset, best + alignStride - 1);
         for (int d = lo; d <= hi; ++d)
         {
             if (d == best) continue;
@@ -516,7 +523,7 @@ private:
 
     AdaaTanh sat[2];
     DcBlocker dc[2];
-    float satPre = 1.0f, satPost = 1.0f, satEven = 0.0f;
+    Ramp rSatPre, rSatPost, rSatEven;
 
     Svf tone[2];
     Shelf1 bump[2];
@@ -525,7 +532,7 @@ private:
     Ramp rDrop, rMix;
 
     StutterState st;
-    int lastGrid = -1, fadeLen = 144, alignLen = 576, alignStride = 3;
+    int lastGrid = -1, fadeLen = 144, alignLen = 576, alignStride = 3, lastExtra = 0;
 
     Smooth sOn, sMix, sDrive, sAge, sWowDepth, sFlutDepth;
     bool first = true;

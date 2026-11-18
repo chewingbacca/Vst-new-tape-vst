@@ -65,7 +65,7 @@ void Engine::reset()
     bandLo.reset(); bandHi.reset();
     for (auto& h : ambHp) h.reset();
     chunkPos = 0;
-    beat = 0.0;
+    beat = 0.0; freeBase = 0.0; freeInc = 0.0; freeSamples = 0;
     firstBlock = true;
     meterIn = meterOutL = meterOutR = meterWet = 0.0f;
     eLow = eMid = eHigh = 0.0f;
@@ -370,24 +370,47 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
 {
     const ScopedNoDenormals noDenormals;
 
+    // Non-finite input is replaced by silence before it can reach any state. (Resetting the
+    // whole engine instead would cost milliseconds per block for as long as the bad input lasts.)
+    for (int i = 0; i < n; ++i)
+    {
+        if (isBad (left[i]))  left[i] = 0.0f;
+        if (isBad (right[i])) right[i] = 0.0f;
+    }
+
     // the real tempo, however slow: the clock must agree with the host's ppq at any block size
     samplesPerBeat = 60.0 * double (sr) / std::clamp (transport.bpm, 1.0, 999.0);
     beatInc = 1.0 / samplesPerBeat;
+
+    // Beat position of sample `done` of this block. Playing: host ppq + offset. Stopped: an
+    // integer sample counter times the increment, so the value at any sample is the same
+    // however the host slices its blocks.
     if (transport.playing)
-        beat = transport.ppq;
+    {
+        freeBase = transport.ppq;
+        freeSamples = 0;
+        freeInc = beatInc;
+    }
+    else if (freeInc < beatInc || freeInc > beatInc)
+    {
+        freeBase += double (freeSamples) * freeInc;     // tempo changed: re-base
+        freeSamples = 0;
+        freeInc = beatInc;
+    }
 
     int done = 0;
     while (done < n)
     {
+        beat = freeBase + double (freeSamples + done) * freeInc;
         if (chunkPos == 0)
             controlTick();
 
         const int m = std::min (n - done, kChunk - chunkPos);
         processChunk (left + done, right + done, m);
         done += m;
-        beat += double (m) * beatInc;
         chunkPos = (chunkPos + m) % kChunk;
     }
+    freeSamples += n;
 
     // Last line of defence: never hand the host a non-finite sample.
     bool bad = false;

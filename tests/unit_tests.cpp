@@ -1028,6 +1028,274 @@ TEST (engine_is_block_size_invariant_at_very_slow_tempo_and_with_a_saturated_clo
     }
 }
 
+//==============================================================================
+// Regression tests for the second review round.
+
+// Peak of everything above `cutHz` (two cascaded 12 dB/oct high-passes) between two times.
+float hfPeak (const std::vector<float>& x, float sr, float cutHz, double fromSec, double toSec)
+{
+    Svf h1, h2;
+    h1.set (cutHz, 0.7071f, sr); h2.set (cutHz, 0.7071f, sr);
+    float peak = 0.0f;
+    const size_t a = size_t (fromSec * sr), b = std::min (x.size(), size_t (toSec * sr));
+    for (size_t i = 0; i < b; ++i)
+    {
+        const float y = h2.high (h1.high (x[i]));
+        if (i >= a) peak = std::max (peak, std::abs (y));
+    }
+    return peak;
+}
+
+TEST (arp_keeps_replaying_the_body_of_a_long_ringing_note)
+{
+    // A note that rings for many seconds: the arp must keep using its loud part instead of
+    // re-anchoring onto the quiet tail (regression) or falling silent (the original defect).
+    const float sr = 48000.0f;
+    for (float tau : { 0.7f, 1.5f, 2.5f })
+    {
+        Arp arp;
+        arp.prepare (sr);
+        Arp::Controls c;
+        c.pattern = 0; c.rate = 3; c.hold = 1.0f; c.track = false;
+        const int N = int (sr) * 14;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i)
+            in[size_t (i)] = 0.5f * std::exp (-float (i) / (tau * sr)) * std::sin (kTwoPi * 220.0f * float (i) / sr);
+        runBlocks (N, [&] (int pos) { c.beat = double (pos) / 24000.0; arp.control (c); },
+                   [&] (int pos, int n) { arp.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        const double early = rmsOf (oL.data() + int (sr) * 2, int (sr));
+        for (int sec = 5; sec < 14; ++sec)
+            CHECK (rmsOf (oL.data() + int (sr) * sec, int (sr)) > early * 0.25);     // within 12 dB, for good
+    }
+}
+
+TEST (chorus_glassy_voice_changes_and_reenable_do_not_click)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 6;
+    auto run = [&] (int scenario)
+    {
+        Chorus ch;
+        ch.prepare (sr);
+        Chorus::Controls c;
+        c.glass = 1.0f; c.mix = 0.6f; c.voices = 8;
+        std::vector<float> l (static_cast<size_t> (N)), r (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i) l[size_t (i)] = r[size_t (i)] = 0.5f * std::sin (kTwoPi * 1000.0f * float (i) / sr);
+        runBlocks (N, [&] (int pos)
+                   {
+                       const int k = pos / 24000;
+                       if (scenario == 1) c.voices = (k % 2) ? 24 : 2;
+                       if (scenario == 2) c.on = (k % 2) == 0;
+                       if (scenario == 3) c.mix = (k % 2) ? 0.0f : 1.0f;
+                       ch.control (c);
+                   },
+                   [&] (int pos, int n) { ch.process (l.data() + pos, r.data() + pos, n); });
+        return hfPeak (l, sr, 9000.0f, 1.0, 6.0);
+    };
+    const float steady = run (0);
+    CHECK (run (1) < steady * 6.0f + 1.0e-3f);     // voices 2 <-> 24   (was about -22 dBFS)
+    CHECK (run (2) < steady * 6.0f + 1.0e-3f);     // off / on          (was about -36 dBFS)
+    CHECK (run (3) < steady * 6.0f + 1.0e-3f);     // mix 0 <-> 100 %
+}
+
+TEST (tape_leaving_and_returning_to_neutral_does_not_dip)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 6;
+    for (float hz : { 125.0f, 208.0f, 292.0f })
+        for (int scenario = 0; scenario < 3; ++scenario)
+        {
+            Tape t;
+            t.prepare (sr);
+            Tape::Controls c;
+            c.wow = c.flutter = c.drive = c.age = 0.0f;
+            std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+            for (int i = 0; i < N; ++i) in[size_t (i)] = 0.3f * std::sin (kTwoPi * hz * float (i) / sr);
+            runBlocks (N, [&] (int pos)
+                       {
+                           const double tsec = double (pos) / sr;
+                           const bool mid = tsec > 2.0 && tsec < 4.0;
+                           if (scenario == 0) c.speedSemis = mid ? 0.02f : 0.0f;
+                           if (scenario == 1) c.stretch = mid ? 2.0f : 1.0f;
+                           if (scenario == 2) c.speedSemis = -0.3f + 0.6f * float (tsec / 6.0);   // slow sweep through 0
+                           c.beat = tsec * 2.0 + 0.37;      // off the bar grid, so only the knob move matters
+                           t.control (c);
+                       },
+                       [&] (int pos, int n) { t.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+            const double ref = rmsOf (oL.data() + int (sr), int (sr) / 2);
+            double lowest = 1.0e9;
+            for (int i = int (sr); i + 480 < N; i += 240)
+                lowest = std::min (lowest, rmsOf (oL.data() + i, 480));
+            CHECK (20.0 * std::log10 (lowest / ref) > -3.0);      // was -17 .. -20 dB
+        }
+}
+
+TEST (grain_density_and_size_drops_do_not_burst_and_rises_respond_quickly)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 6;
+    std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+    Rng rng;
+    for (auto& v : in) v = 0.2f * rng.bi();
+
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        GrainCloud g;
+        g.prepare (sr);
+        GrainCloud::Controls c;
+        c.spread = 0.0f;
+        runBlocks (N, [&] (int pos)
+                   {
+                       const bool after = pos >= int (sr) * 3;
+                       c.density = (scenario == 0 && after) ? 0.5f : 80.0f;
+                       c.sizeMs  = (scenario == 1 && after) ? 10.0f : 800.0f;
+                       g.control (c);
+                   },
+                   [&] (int pos, int n) { g.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        const double before = rmsOf (oL.data() + int (sr) * 2, int (sr));
+        double worst = 0.0;
+        for (int i = int (sr) * 3; i + 12000 <= int (sr) * 5; i += 6000)
+            worst = std::max (worst, rmsOf (oL.data() + i, 12000));
+        CHECK (20.0 * std::log10 (worst / before) < 2.5);      // was +12.6 dB for half a second
+    }
+
+    // density 0.5 -> 80: the next grain must not wait out an interval drawn at 0.5 grains/s
+    GrainCloud g;
+    g.prepare (sr);
+    GrainCloud::Controls c;
+    c.density = 0.5f;
+    int countAtJump = 0, countSoonAfter = 0;
+    runBlocks (N, [&] (int pos)
+               {
+                   if (pos == int (sr) * 3) { countAtJump = g.spawnCount; c.density = 80.0f; }
+                   if (pos == int (sr) * 3 + 9600) countSoonAfter = g.spawnCount;        // 200 ms later
+                   g.control (c);
+               },
+               [&] (int pos, int n) { g.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+    CHECK (countSoonAfter - countAtJump >= 5);
+}
+
+TEST (engine_arp_is_block_size_invariant_at_44k_and_with_stopped_transport)
+{
+    // At 44.1 kHz and 120 BPM a 1/16 step is 5512.5 samples: step boundaries fall between samples.
+    auto render = [] (double sr, int block, bool playing)
+    {
+        Engine e;
+        e.prepare (sr, 4096);
+        ParamValues p;
+        p[pArpRate] = 5.0f; p[pArpPattern] = 0.0f; p[pArpMix] = 1.0f; p[pArpWash] = 0.0f;
+        e.setParams (p);
+        auto s = vtest::phrase (sr, 8.0);
+        Transport tr;
+        tr.playing = playing;
+        size_t pos = 0;
+        while (pos < s.size())
+        {
+            const int n = int (std::min (size_t (block), s.size() - pos));
+            tr.ppq = double (pos) / sr * 2.0;
+            e.process (s.l.data() + pos, s.r.data() + pos, n, tr);
+            pos += size_t (n);
+        }
+        return s;
+    };
+    for (double sr : { 44100.0, 48000.0 })
+        for (bool playing : { true, false })
+        {
+            const auto a = render (sr, 512, playing), b = render (sr, 64, playing), c = render (sr, 1, playing);
+            double errB = 0.0, errC = 0.0;
+            for (size_t i = 0; i < a.size(); ++i)
+            {
+                errB = std::max (errB, double (std::abs (a.l[i] - b.l[i])));
+                errC = std::max (errC, double (std::abs (a.l[i] - c.l[i])));
+            }
+            CHECK (errB < 1.0e-5);
+            CHECK (errC < 1.0e-5);
+        }
+}
+
+TEST (engine_rides_through_continuous_non_finite_input_without_losing_its_state)
+{
+    Engine e;
+    e.prepare (48000.0, 512);
+    ParamValues p;
+    p[pRevDecay] = 8.0f;
+    e.setParams (p);
+    auto s = vtest::sine (48000.0, 3.0, 330.0, 0.3f);
+    for (size_t i = 48000; i < s.size(); ++i)
+        s.l[i] = s.r[i] = std::numeric_limits<float>::quiet_NaN();       // two seconds of NaN
+    Transport tr;
+    bool finite = true;
+    double tailEnergy = 0.0;
+    for (size_t pos = 0; pos < s.size(); pos += 256)
+    {
+        const size_t n = std::min (size_t (256), s.size() - pos);
+        e.process (s.l.data() + pos, s.r.data() + pos, int (n), tr);
+        for (size_t i = pos; i < pos + n; ++i)
+        {
+            finite = finite && std::isfinite (s.l[i]) && std::isfinite (s.r[i]);
+            if (i > 72000) tailEnergy += double (s.l[i]) * s.l[i];
+        }
+    }
+    CHECK (finite);
+    CHECK (tailEnergy > 1.0e-4);     // the reverb tail of the good audio is still ringing: no reset happened
+}
+
+TEST (reverb_raising_shimmer_later_does_not_replay_old_audio)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 30;
+    for (int pitch : { 0, 3 })
+    {
+        Reverb rv;
+        rv.prepare (sr);
+        Reverb::Controls c;
+        c.decaySec = 0.8f; c.shimmerPitch = pitch;
+        std::vector<float> in (static_cast<size_t> (N), 0.0f), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        Rng rng;
+        for (int i = 0; i < int (sr) * 2; ++i) in[size_t (i)] = 0.3f * rng.bi();
+        runBlocks (N, [&] (int pos)
+                   {
+                       const double tsec = double (pos) / sr;
+                       c.shimmer = (tsec < 2.0 || tsec > 25.0) ? 0.6f : 0.0f;    // off during the long silence
+                       rv.control (c);
+                   },
+                   [&] (int pos, int n) { rv.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        float peak = 0.0f;
+        for (int i = int (sr) * 25; i < N; ++i) peak = std::max (peak, std::abs (oL[size_t (i)]));
+        CHECK (peak < 1.0e-6f);       // was up to -36 dBFS
+    }
+}
+
+TEST (tape_drive_moves_without_zipper_noise)
+{
+    const float sr = 48000.0f;
+    const int N = int (sr) * 4;
+    auto run = [&] (bool jump)
+    {
+        Tape t;
+        t.prepare (sr);
+        Tape::Controls c;
+        c.wow = c.flutter = c.age = 0.0f; c.drive = 1.0f;
+        std::vector<float> in (static_cast<size_t> (N)), oL (static_cast<size_t> (N)), oR (static_cast<size_t> (N));
+        for (int i = 0; i < N; ++i) in[size_t (i)] = 0.9f * std::sin (kTwoPi * 110.0f * float (i) / sr);
+        runBlocks (N, [&] (int pos) { c.drive = (jump && (pos / 24000) % 2 == 1) ? 0.0f : 1.0f; c.beat = double (pos) / 24000.0; t.control (c); },
+                   [&] (int pos, int n) { t.process (in.data() + pos, in.data() + pos, oL.data() + pos, oR.data() + pos, n); });
+        return hfPeak (oL, sr, 8000.0f, 0.5, 4.0);
+    };
+    const float steady = run (false), jumping = run (true);
+    CHECK (jumping < steady * 4.0f + 2.0e-4f);     // was 150x above the steady level
+}
+
+TEST (pitch_tracker_estimate_can_be_invalidated)
+{
+    PitchTracker pt;
+    pt.prepare (48000.0f);
+    for (int i = 0; i < 48000; ++i) pt.push (0.3f * std::sin (kTwoPi * 220.0f * float (i) / 48000.0f));
+    CHECK (pt.currentHz() > 200.0f);
+    pt.invalidate();
+    CHECK (pt.currentHz() == 0.0f && pt.currentMidi() < 0.0f);
+}
+
 TEST (engine_dry_and_wet_paths_are_time_aligned)
 {
     // With every module off the wet path is just the direct signal. Mixed 50/50 with the dry

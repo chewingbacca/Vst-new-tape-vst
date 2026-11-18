@@ -101,7 +101,12 @@ struct Smooth
     }
     void snap (float v)    { y = target = v; }
     void set (float v)     { target = v; }
-    float tick()           { y += a * (target - y); return y; }
+    float tick()
+    {
+        y += a * (target - y);
+        if (std::abs (target - y) < 1.0e-6f) y = target;     // land exactly (e.g. bypass = exactly 1)
+        return y;
+    }
     float get() const      { return y; }
 };
 

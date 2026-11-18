@@ -52,6 +52,9 @@ public:
         }
     }
 
+    // Forget the current estimate (e.g. the tracker was not fed for a while).
+    void invalidate() { sinceConfident = 1 << 28; }
+
     // MIDI note (fractional) of the most recent confident estimate, or < 0 if none is fresh.
     float currentMidi() const { return sinceConfident < holdSamples ? midi : -1.0f; }
     float currentHz() const   { return sinceConfident < holdSamples ? hz : 0.0f; }

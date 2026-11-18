@@ -237,7 +237,7 @@ public:
         const float sin2 = 0.95f * std::pow (shim, 1.5f) * (1.0f - frz);
         shimSin = std::sqrt (sin2);
         shimCos = std::sqrt (1.0f - sin2);
-        shimOn = shimSin > 1.0e-3f;
+        if (shimSin <= 1.0e-3f) { shimSin = 0.0f; shimCos = 1.0f; }
         for (int k = 0; k < 2; ++k)
         {
             const float r = ratios[sp][k];
@@ -324,14 +324,13 @@ public:
             // ---- orthonormal mix
             hadamard16 (f);
 
-            // ---- shimmer: replace part of two channels with their pitch-shifted copy
-            if (shimOn)
+            // ---- shimmer: replace part of two channels with their pitch-shifted copy.
+            // The shifters always run (with shimSin = 0 they have no effect), so their buffers
+            // never hold stale audio that could reappear when Shimmer is turned up later.
+            for (int k = 0; k < 2; ++k)
             {
-                for (int k = 0; k < 2; ++k)
-                {
-                    const float ps = shifter[k].process (shimLp[k].low (shimHp[k].process (f[k])));
-                    f[k] = shimCos * f[k] + shimSin * ps;
-                }
+                const float ps = shifter[k].process (shimLp[k].low (shimHp[k].process (f[k])));
+                f[k] = shimCos * f[k] + shimSin * ps;
             }
 
             // ---- inject input and write back
@@ -404,7 +403,6 @@ private:
     OnePoleHP shimHp[2];
     Svf shimLp[2], outHp[2];
     float shimSin = 0.0f, shimCos = 1.0f;
-    bool shimOn = false;
 
     float energy = 0.0f, energyAcc = 0.0f, energySmooth = 0.1f;
     int energyCount = 0;

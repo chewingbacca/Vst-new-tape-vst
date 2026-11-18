@@ -80,8 +80,11 @@ public:
         gateAtk = 1.0f - std::exp (-1.0f / (0.003f * sr));
         gateRel = 1.0f - std::exp (-1.0f / (0.040f * sr));
         hangSamples = int (0.08f * sr);
-        peakDecay = std::pow (0.5f, 1.0f / (4.0f * sr));
-        anchorTimeout = int64_t (3.0f * sr);
+        peakDecay = std::pow (0.5f, 1.0f / (12.0f * sr));    // slow: new onsets re-reference it anyway
+        histBlock = std::max (64, int (0.02f * sr));
+        hist.assign (size_t (ringLen / histBlock + 8), 0.0f);
+        slowCoef = 1.0f - std::exp (-1.0f / (0.060f * sr));
+        onsetHoldoff = int (0.08f * sr);
         sOn.setTime (0.03f, tickRate);
         reset();
     }
@@ -94,7 +97,9 @@ public:
         tracker.reset();
         for (auto& v : voices) v.active = false;
         recW = 0; recorded = 0; loudPos = 0; peakHold = 0.0f;
-        env = 0.0f; gate = 0.0f; gateOpen = false; hang = 0;
+        std::fill (hist.begin(), hist.end(), 0.0f);
+        slowEnv = 0.0f; sinceOnset = 0; trackOn = false;
+        env = 0.0f; gate = 0.0f; gateOpen = false; bodyOpen = false; hang = 0;
         linger = 0.0f;
         lastStep = INT64_MIN; pendingOffset = -1; cursor = 0;
         lastRandom = -1; stepCount = 0;
@@ -140,28 +145,46 @@ public:
         {
             const double nextBoundary = double (stepNow + 1) * stepBeats;
             const double samplesTo = (nextBoundary - c.beat) / beatInc;
-            if (samplesTo < 31.5)
+            // Fire on the first sample at or after the boundary. The 1e-3 sample tolerance makes
+            // the choice immune to float noise in the beat position (which depends on how the
+            // host slices blocks); a boundary that rounds to sample 32 is taken by the next chunk.
+            const int offset = int (std::ceil (samplesTo - 1.0e-3));
+            if (offset <= 31)
             {
-                pendingOffset = std::clamp (int (std::ceil (samplesTo - 1.0e-6)), 0, 31);
+                pendingOffset = std::max (0, offset);
                 pendingStep = stepNow + 1;
             }
         }
         stepSamples = stepBeats * c.samplesPerBeat;
-        trackOn = c.on;     // the tracker always listens while the module is on (it also feeds the UI read-out)
+        // the tracker listens whenever the module is on (it also feeds the UI read-out); an
+        // estimate from before the module was switched off must not be trusted afterwards
+        if (c.on && ! trackOn) tracker.invalidate();
+        trackOn = c.on;
     }
 
     // outL/outR receive the arp voices (overwritten).
     void process (const float* inL, const float* inR, float* outL, float* outR, int n)
     {
+        int rendered = 0;
+
         // ---- record while the input is sounding; fire the step exactly on its sample
         for (int i = 0; i < n; ++i)
         {
+            outL[i] = 0.0f;
+            outR[i] = 0.0f;
+
             if (pendingOffset >= 0 && cursor + i >= pendingOffset)
             {
                 lastStep = pendingStep;
                 pendingOffset = -1;
                 if (ctl.on && linger > 0.001f)
-                    triggerStep (pendingStep, i);
+                {
+                    // bring every voice up to this sample first, so a voice that has just ended
+                    // frees its slot regardless of how the host slices blocks
+                    renderVoices (outL, outR, rendered, i);
+                    rendered = i;
+                    triggerStep (pendingStep);
+                }
             }
 
             const float x = 0.5f * (inL[i] + inR[i]);
@@ -169,9 +192,25 @@ public:
             env += (a > env ? envAtk : envRel) * (a - env);
             if (env > 0.006f)       { gateOpen = true; hang = hangSamples; }
             else if (env < 0.002f)  { if (hang > 0) --hang; else gateOpen = false; }
-            const float gt = gateOpen ? 1.0f : 0.0f;
-            gate += (gt > gate ? gateAtk : gateRel) * (gt - gate);
+
+            // A new onset (the level jumps well above its recent average) re-references the
+            // "strong" level, so a softer note played after a loud one is picked up at once.
+            slowEnv += slowCoef * (env - slowEnv);
+            if (sinceOnset < onsetHoldoff) ++sinceOnset;
+            if (env > 2.0f * slowEnv + 0.004f && sinceOnset >= onsetHoldoff)
+            {
+                peakHold = env;
+                sinceOnset = 0;
+            }
             peakHold = std::max (env, peakHold * peakDecay);
+
+            // Record only the part of a sound that is within about 20 dB of its peak. The long
+            // quiet tail of a ringing note is left out, so it cannot push the note's body out of
+            // the capture ring; the arp keeps working on the body for as long as it lingers.
+            if (env > 0.12f * peakHold)       bodyOpen = true;
+            else if (env < 0.08f * peakHold)  bodyOpen = false;
+            const float gt = (gateOpen && bodyOpen) ? 1.0f : 0.0f;
+            gate += (gt > gate ? gateAtk : gateRel) * (gt - gate);
 
             const float xh = recHp.process (x);   // keeps enveloped rumble / DC out of the notes
             const float a1 = lpA2.low (lpA1.low (xh)), b1 = lpB2.low (lpB1.low (xh));
@@ -181,33 +220,58 @@ public:
                 rec[0].setAt (w, xh * gate);
                 rec[1].setAt (w, a1 * gate);
                 rec[2].setAt (w, b1 * gate);
+
+                // coarse loudness history of what is in the ring (one value per ~20 ms)
+                const size_t h = size_t ((recW / histBlock) % int64_t (hist.size()));
+                if (recW % histBlock == 0) hist[h] = 0.0f;
+                hist[h] = std::max (hist[h], env);
+
                 ++recW;
                 if (recorded < int64_t (ringLen)) ++recorded;
-                // remember where the sound was last "strong": decaying plucks are then
+                // remember where the sound was last "strong": decaying notes are then
                 // re-played from their body, not from their quiet tail
                 if (env >= 0.5f * peakHold) loudPos = recW;
-                // ...but never get stuck there: if quieter material has been sounding for 3 s
-                // (e.g. a soft sustained note after a loud chord), re-reference to it.
-                else if (recW - loudPos > anchorTimeout) { peakHold = env; loudPos = recW; }
             }
 
             if (trackOn) tracker.push (x);
-
-            outL[i] = 0.0f;
-            outR[i] = 0.0f;
         }
         cursor += n;
 
-        // ---- render voices
+        renderVoices (outL, outR, rendered, n);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = rOn.next();
+            outL[i] *= g;
+            outR[i] *= g;
+        }
+    }
+
+    float pitchHz() const { return trackOn ? tracker.currentHz() : 0.0f; }
+
+    int noteCount = 0, lastDegree = 0;
+
+private:
+    struct Voice
+    {
+        bool active = false;
+        int band = 0, band2 = 2;
+        double pos = 0.0, pos2 = 0.0, inc = 1.0;
+        float ph = 0.0f, phInc = 0.0f, sparkle = 0.0f;
+        float gl = 0.7f, gr = 0.7f;
+        float attack = 0.1f, invAttack = 10.0f, invRelease = 1.1f, pluck = 0.5f;
+    };
+
+    void renderVoices (float* outL, float* outR, int from, int to)
+    {
+        if (to <= from) return;
         const HannTable& hann = hannTable();
         for (auto& v : voices)
         {
             if (! v.active) continue;
-            int i = v.startOffset;
-            v.startOffset = 0;
             const Ring& ring = rec[v.band];
             const Ring& ring2 = rec[v.band2];
-            for (; i < n; ++i)
+            for (int i = from; i < to; ++i)
             {
                 float w;
                 if (v.ph < v.attack)
@@ -229,34 +293,39 @@ public:
                 if (v.ph >= 1.0f) { v.active = false; break; }
             }
         }
-
-        for (int i = 0; i < n; ++i)
-        {
-            const float g = rOn.next();
-            outL[i] *= g;
-            outR[i] *= g;
-        }
     }
 
-    float pitchHz() const { return trackOn ? tracker.currentHz() : 0.0f; }
-
-    int noteCount = 0, lastDegree = 0;
-
-private:
-    struct Voice
+    // Where the note's source slice should end, and how much room there is in front of it.
+    // Normally that is the last "strong" position. Only if (almost) nothing usable is left in
+    // front of it - it is about to be overwritten - the anchor moves to the latest spot within
+    // 6 dB of the loudest material still in the ring.
+    int64_t chooseAnchor (double minNeed)
     {
-        bool active = false;
-        int band = 0, band2 = 2;
-        int startOffset = 0;
-        double pos = 0.0, pos2 = 0.0, inc = 1.0;
-        float ph = 0.0f, phInc = 0.0f, sparkle = 0.0f;
-        float gl = 0.7f, gr = 0.7f;
-        float attack = 0.1f, invAttack = 10.0f, invRelease = 1.1f, pluck = 0.5f;
-    };
+        const int64_t avail = std::min (recorded, int64_t (ringLen - 64));
+        const int64_t ringStart = recW - avail;
+        if (loudPos - ringStart - 16 >= int64_t (minNeed))
+            return loudPos;
 
-    void triggerStep (int64_t step, int offset)
+        const int64_t oldest = ringStart + int64_t (minNeed) + 16;      // earliest usable anchor
+        const int64_t bFirst = (oldest + histBlock - 1) / histBlock, bLast = (recW - 1) / histBlock;
+        if (recW <= 0 || bFirst > bLast)
+            return recW;
+
+        float loudest = 0.0f;
+        for (int64_t blk = bFirst; blk <= bLast; ++blk)
+            loudest = std::max (loudest, hist[size_t (blk % int64_t (hist.size()))]);
+        int64_t pick = bLast;
+        for (int64_t blk = bLast; blk >= bFirst; --blk)
+            if (hist[size_t (blk % int64_t (hist.size()))] >= 0.5f * loudest) { pick = blk; break; }
+
+        loudPos = std::clamp ((pick + 1) * int64_t (histBlock), oldest, recW);
+        peakHold = std::max (loudest, env);
+        return loudPos;
+    }
+
+    void triggerStep (int64_t step)
     {
-        const int64_t anchor = loudPos;
+
         const ScaleDef& sc = kScales[std::clamp (ctl.scale, 0, kNumScales - 1)];
         const int range = std::clamp (ctl.range, 1, 4);
         const bool bloom = ctl.pattern == 4;
@@ -326,9 +395,17 @@ private:
 
         // ---- duration and source span
         double dur = std::clamp (double (ctl.gate) * stepSamples * (bloom ? 2.5 : 1.0), 0.03 * double (sr), 3.5 * double (sr));
-        const double maxSpan = double (std::min (recorded - (recW - loudPos), int64_t (ringLen - 64))) - 16.0;
-        if (double (ratio) * dur > maxSpan) dur = maxSpan / double (ratio);
+        const double avail = double (std::min (recorded, int64_t (ringLen - 64))) - 32.0;
+        if (double (ratio) * dur > avail) dur = avail / double (ratio);
         if (dur < 0.03 * double (sr)) return;   // nothing (or not enough) recorded yet
+
+        // The slice must fit between the start of the ring and the anchor. If the sound's body
+        // is short, the note is shortened rather than moved onto quieter material.
+        const double minDur = 0.05 * double (sr);
+        const int64_t anchor = chooseAnchor (double (ratio) * std::min (dur, minDur));
+        const double maxSpan = double (anchor - (recW - std::min (recorded, int64_t (ringLen - 64)))) - 16.0;
+        if (double (ratio) * dur > maxSpan) dur = maxSpan / double (ratio);
+        if (dur < 0.03 * double (sr)) return;
 
         Voice* slot = nullptr;
         for (auto& v : voices)
@@ -358,7 +435,6 @@ private:
         v.invAttack = 1.0f / v.attack;
         v.invRelease = 1.0f / (1.0f - v.attack);
         v.pluck = bloom ? 0.25f : 0.55f;
-        v.startOffset = offset;
 
         // stereo: alternate sides, bloom opens outwards
         float pan = ((stepCount & 1) ? 0.45f : -0.45f) + 0.15f * rng.bi();
@@ -383,16 +459,19 @@ private:
     Svf lpA1, lpA2, lpB1, lpB2;
     OnePoleHP recHp;
     int ringLen = 0;
-    int64_t recW = 0, recorded = 0, loudPos = 0, anchorTimeout = 144000;
+    int64_t recW = 0, recorded = 0, loudPos = 0;
+    std::vector<float> hist;
+    int histBlock = 960, onsetHoldoff = 3840, sinceOnset = 0;
+    float slowEnv = 0.0f, slowCoef = 0.001f;
     float peakHold = 0.0f, peakDecay = 1.0f;
 
     float env = 0.0f, gate = 0.0f, envAtk = 0, envRel = 0, gateAtk = 0, gateRel = 0;
-    bool gateOpen = false;
+    bool gateOpen = false, bodyOpen = false;
     int hang = 0, hangSamples = 0;
     float linger = 0.0f;
 
     PitchTracker tracker;
-    bool trackOn = true;
+    bool trackOn = false;
 
     std::array<Voice, kMaxVoices> voices;
     int64_t lastStep = INT64_MIN, pendingStep = 0;
