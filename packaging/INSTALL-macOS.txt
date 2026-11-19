@@ -1,0 +1,19 @@
+Verdant for macOS (Apple Silicon and Intel, macOS 10.15 or later)
+=================================================================
+
+1. Copy "Verdant.vst3"      to  ~/Library/Audio/Plug-Ins/VST3/
+   Copy "Verdant.component" to  ~/Library/Audio/Plug-Ins/Components/   (Audio Unit: Logic, GarageBand)
+   (In Finder: Go > Go to Folder... and paste the path.)
+
+2. This build is not notarised by Apple, so macOS quarantines it after download.
+   Open Terminal and run these two lines once:
+
+       xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Verdant.vst3
+       xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Verdant.component
+
+3. Start your DAW and rescan plug-ins. Verdant appears as an effect by "Verdant Audio Lab".
+   If Logic does not list it, restart the Mac once (the Audio Unit cache refreshes at login).
+
+"Verdant.app" is the standalone version. Before the first start run
+       xattr -dr com.apple.quarantine /path/to/Verdant.app
+or right-click it and choose Open. Use headphones to avoid feedback.

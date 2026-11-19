@@ -30,6 +30,7 @@ add_library(verdant_dsp STATIC ${VERDANT_DSP_SOURCES})
 target_include_directories(verdant_dsp PUBLIC src)
 target_compile_features(verdant_dsp PUBLIC cxx_std_20)
 if(MSVC)
+    target_compile_definitions(verdant_dsp PUBLIC _USE_MATH_DEFINES NOMINMAX)
     target_compile_options(verdant_dsp PRIVATE /W4 /fp:fast)
 else()
     target_compile_options(verdant_dsp PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion

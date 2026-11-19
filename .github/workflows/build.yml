@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -R build/Verdant_artefacts/Release/VST3/Verdant.vst3 dist/
+          cp build/Verdant_artefacts/Release/Standalone/Verdant.exe dist/
+          cp packaging/INSTALL-Windows.txt dist/INSTALL.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Verdant-Windows
+          path: dist
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ninja
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          mkdir -p dist/Verdant
+          A=build/Verdant_artefacts/Release
+          cp -R "$A/VST3/Verdant.vst3" "$A/AU/Verdant.component" "$A/Standalone/Verdant.app" dist/Verdant/
+          cp packaging/INSTALL-macOS.txt dist/Verdant/INSTALL.txt
+          for b in Verdant.vst3 Verdant.component Verdant.app; do
+            codesign --force --deep --sign - "dist/Verdant/$b"
+            lipo -archs "dist/Verdant/$b/Contents/MacOS/Verdant"
+          done
+          # ditto keeps the bundles (permissions, signatures) intact inside the artifact
+          ditto -c -k --keepParent dist/Verdant dist/Verdant-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Verdant-macOS
+          path: dist/Verdant-macOS.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: ./scripts/install-linux-deps.sh
+      - name: Build
+        run: ./scripts/build.sh
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R build/Verdant_artefacts/Release/VST3/Verdant.vst3 dist/
+          cp build/Verdant_artefacts/Release/Standalone/Verdant dist/
+          tar -C dist -czf Verdant-Linux.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Verdant-Linux
+          path: Verdant-Linux.tar.gz
+          if-no-files-found: error
