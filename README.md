@@ -47,6 +47,15 @@ Outputs:
 | Offline renderer | `build/tests/verdant_render` |
 | Unit tests | `build/tests/verdant_tests` |
 
+## Download a build (no compiler needed)
+
+Every push is built and tested on Windows, macOS (universal: Apple Silicon + Intel) and Linux by
+GitHub Actions. Open the repository's **Actions** tab, pick the latest green **Build** run and
+download `Verdant-Windows`, `Verdant-macOS` or `Verdant-Linux` from the **Artifacts** section at
+the bottom of the page (you must be signed in to GitHub). Each download contains the VST3, the
+standalone app (plus the Audio Unit on macOS) and an `INSTALL.txt`. The builds are not code-signed;
+`INSTALL.txt` explains the one extra step that needs on macOS.
+
 ## Install
 
 `./scripts/install.sh` copies the built plugin to the per-user plug-in folder, or configure with
