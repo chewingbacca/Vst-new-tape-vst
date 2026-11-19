@@ -31,7 +31,9 @@ target_include_directories(verdant_dsp PUBLIC src)
 target_compile_features(verdant_dsp PUBLIC cxx_std_20)
 if(MSVC)
     target_compile_definitions(verdant_dsp PUBLIC _USE_MATH_DEFINES NOMINMAX)
-    target_compile_options(verdant_dsp PRIVATE /W4 /fp:fast)
+    # no /fp:fast: it lets the compiler assume NaN never happens, and the engine's protection
+    # against non-finite input must hold
+    target_compile_options(verdant_dsp PRIVATE /W4)
 else()
     target_compile_options(verdant_dsp PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion
         -fno-math-errno -ffp-contract=fast)

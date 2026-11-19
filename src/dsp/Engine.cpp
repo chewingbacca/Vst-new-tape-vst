@@ -380,8 +380,8 @@ void Engine::process (float* left, float* right, int n, const Transport& transpo
 
     // Hosts have been seen to hand over garbage: a non-finite tempo falls back to 120 BPM and
     // a non-finite (or absurd) position is treated as a stopped transport.
-    const double bpm = std::isfinite (transport.bpm) ? transport.bpm : 120.0;
-    const bool playing = transport.playing && std::isfinite (transport.ppq) && std::abs (transport.ppq) < 1.0e9;
+    const double bpm = isFiniteValue (transport.bpm) ? transport.bpm : 120.0;
+    const bool playing = transport.playing && isFiniteValue (transport.ppq) && std::abs (transport.ppq) < 1.0e9;
 
     // the real tempo, however slow: the clock must agree with the host's ppq at any block size
     samplesPerBeat = 60.0 * double (sr) / std::clamp (bpm, 1.0, 999.0);

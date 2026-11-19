@@ -66,7 +66,24 @@ inline float macroScale (float m, float lo, float hi)
 // Macro helper: m in 0..1 with 0.5 neutral -> -1..0..+1.
 inline float macroBipolar (float m) { return clampf (m * 2.0f - 1.0f, -1.0f, 1.0f); }
 
-inline bool isBad (float x) { return ! (std::abs (x) < 1.0e15f); } // catches NaN, inf and absurd values
+// Catches NaN, inf and absurd values (|x| >= 1e15). Done on the bit pattern, so a compiler in
+// a fast-math mode (which may assume NaN never happens) cannot optimise the test away.
+inline bool isBad (float x)
+{
+    uint32_t bits, limit;
+    const float big = 1.0e15f;
+    std::memcpy (&bits, &x, sizeof (bits));
+    std::memcpy (&limit, &big, sizeof (limit));
+    return (bits & 0x7fffffffu) >= limit;
+}
+
+// Same idea for doubles: false for NaN and +-inf.
+inline bool isFiniteValue (double x)
+{
+    uint64_t bits;
+    std::memcpy (&bits, &x, sizeof (bits));
+    return (bits & 0x7ff0000000000000ull) != 0x7ff0000000000000ull;
+}
 
 // Flush denormals without relying on FTZ/DAZ being set by the host.
 inline float undenorm (float x) { return (std::abs (x) < 1.0e-20f) ? 0.0f : x; }
