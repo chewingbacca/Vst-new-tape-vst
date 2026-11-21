@@ -1,0 +1,11 @@
+build/
+build-*/
+out/
+*.wav
+*.png
+!docs/*.png
+!Assets/**
+__pycache__/
+.vscode/
+.idea/
+*.swp
