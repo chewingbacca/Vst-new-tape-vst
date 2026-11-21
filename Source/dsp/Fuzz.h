@@ -370,7 +370,7 @@ public:
                     // bias-starved second stage: only peaks above a sagging bias get through
                     const float env = c.sagEnv.process (m);
                     const float bias = typeCfg.starve * (3.0f + 0.12f * env);
-                    m = std::max (0.0f, m - bias) - 0.35f * std::max (0.0f, -m - bias * 1.6f);
+                    m = softRectify (m - bias) - 0.35f * softRectify (-m - bias * 1.6f);
                     m *= 2.2f;
                 }
                 c.stage2In = m * typeCfg.gain2;
@@ -421,6 +421,19 @@ public:
     }
 
 private:
+    /** max (0, x) with a short quadratic knee: exactly zero below -k (so the stage really cuts off) but with
+        no corner for the oversampler to alias. */
+    static float softRectify (float x) noexcept
+    {
+        constexpr float k = 0.45f;
+        if (x <= -k)
+            return 0.0f;
+        if (x >= k)
+            return x;
+        const float t = x + k;
+        return t * t * (1.0f / (4.0f * k));
+    }
+
     static constexpr int kStackBase = 2;   // fixed samples of delay in the stack line (so cubic reads are valid)
 
     struct TypeCfg { float gain1, gain2, octave, starve, corner1, corner2, inHp, midHp; };
@@ -434,7 +447,7 @@ private:
             default:
             case 0: typeCfg = { 15.0f, 15.0f, 0.0f, 0.0f, 1300.0f, 1500.0f, 75.0f, 95.0f }; break;    // sustain
             case 1: typeCfg = { 12.0f, 10.0f, 0.85f, 0.0f, 2600.0f, 3200.0f, 180.0f, 160.0f }; break; // octave
-            case 2: typeCfg = { 5.0f, 14.0f, 0.0f, 1.0f, 2200.0f, 3800.0f, 110.0f, 60.0f }; break;    // velcro
+            case 2: typeCfg = { 8.0f, 14.0f, 0.0f, 1.0f, 2200.0f, 3800.0f, 110.0f, 60.0f }; break;    // velcro
         }
         for (int ch = 0; ch < 2; ++ch)
         {

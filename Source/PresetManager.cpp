@@ -35,9 +35,11 @@ PresetManager::PresetManager (SwoonAudioProcessor& p) : processor (p)
 
 juce::File PresetManager::getUserPresetDirectory() const
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-        .getChildFile ("Swoon")
-        .getChildFile ("Presets");
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    base = base.getChildFile ("Application Support");   // JUCE returns ~/Library on macOS
+   #endif
+    return base.getChildFile ("Swoon").getChildFile ("Presets");
 }
 
 juce::StringArray PresetManager::getCategories() const
@@ -50,7 +52,8 @@ juce::StringArray PresetManager::getCategories() const
 
 void PresetManager::rescanUserPresets()
 {
-    const juce::String keepName = currentIndex >= numFactory ? currentName : juce::String();
+    const juce::ScopedLock sl (stateLock);
+    const juce::String keepName = currentIndex.load() >= numFactory ? currentName : juce::String();
     entries.resize ((size_t) numFactory);
 
     auto files = getUserPresetDirectory().findChildFiles (juce::File::findFiles, false, "*.swoon");
@@ -88,8 +91,11 @@ void PresetManager::applyValues (const swoon::ParamValues& values)
 
 void PresetManager::markLoaded (int index, const juce::String& name)
 {
-    currentIndex = index;
-    currentName = name;
+    {
+        const juce::ScopedLock sl (stateLock);
+        currentIndex = index;
+        currentName = name;
+    }
     modified.store (false);
     sendChangeMessage();
 }
@@ -132,7 +138,8 @@ void PresetManager::loadNext()
 {
     if (entries.empty())
         return;
-    loadPreset (currentIndex < 0 ? 0 : (currentIndex + 1) % (int) entries.size());
+    const int cur = currentIndex.load();
+    loadPreset (cur < 0 ? 0 : (cur + 1) % (int) entries.size());
 }
 
 void PresetManager::loadPrevious()
@@ -140,7 +147,8 @@ void PresetManager::loadPrevious()
     if (entries.empty())
         return;
     const int n = (int) entries.size();
-    loadPreset (currentIndex < 0 ? n - 1 : (currentIndex + n - 1) % n);
+    const int cur = currentIndex.load();
+    loadPreset (cur < 0 ? n - 1 : (cur + n - 1) % n);
 }
 
 bool PresetManager::saveUserPreset (const juce::String& rawName)
@@ -187,8 +195,8 @@ bool PresetManager::deleteUserPreset (int index)
     if (! entries[(size_t) index].file.deleteFile())
         return false;
 
-    const bool wasCurrent = index == currentIndex;
-    if (currentIndex > index)
+    const bool wasCurrent = index == currentIndex.load();
+    if (currentIndex.load() > index)
         --currentIndex;
 
     rescanUserPresets();
@@ -212,14 +220,17 @@ void PresetManager::loadFactoryPreset (int index)
 
 void PresetManager::restoreCurrentName (const juce::String& name)
 {
-    currentName = name;
-    currentIndex = -1;
-    for (int i = 0; i < (int) entries.size(); ++i)
-        if (entries[(size_t) i].name == name)
-        {
-            currentIndex = i;
-            break;
-        }
+    {
+        const juce::ScopedLock sl (stateLock);
+        currentName = name;
+        currentIndex = -1;
+        for (int i = 0; i < (int) entries.size(); ++i)
+            if (entries[(size_t) i].name == name)
+            {
+                currentIndex = i;
+                break;
+            }
+    }
 
     modified.store (false);
     sendChangeMessage();

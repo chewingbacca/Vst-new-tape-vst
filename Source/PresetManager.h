@@ -1,6 +1,7 @@
 // Factory + user presets. Factory presets come from the JUCE-free table in
 // dsp/Presets.h; user presets are XML files in the user's app-data folder.
-// All methods are message-thread only.
+// Message thread, except restoreCurrentName() and the factory-program calls,
+// which a host may make from elsewhere.
 #pragma once
 
 #include "dsp/Params.h"
@@ -36,8 +37,8 @@ public:
     void loadPrevious();
 
     /** -1 when the state was restored from a session and matches no known entry. */
-    int getCurrentIndex() const noexcept { return currentIndex; }
-    juce::String getCurrentName() const { return currentName; }
+    int getCurrentIndex() const noexcept { return currentIndex.load(); }
+    juce::String getCurrentName() const { const juce::ScopedLock sl (stateLock); return currentName; }
 
     /** True once any parameter has changed since the last preset load. */
     bool isModified() const noexcept { return modified.load(); }
@@ -49,7 +50,7 @@ public:
 
     // --- host program interface (factory presets only) -----------------------------------
     int getNumFactoryPresets() const noexcept { return numFactory; }
-    int getCurrentFactoryIndex() const noexcept { return currentIndex >= 0 && currentIndex < numFactory ? currentIndex : -1; }
+    int getCurrentFactoryIndex() const noexcept { const int i = currentIndex.load(); return i >= 0 && i < numFactory ? i : -1; }
     juce::String getFactoryPresetName (int index) const;
     void loadFactoryPreset (int index);
 
@@ -64,7 +65,9 @@ private:
     SwoonAudioProcessor& processor;
     std::vector<Entry> entries;
     int numFactory = 0;
-    int currentIndex = 0;
+    // Hosts may restore state or change program off the message thread: the name and index are guarded.
+    juce::CriticalSection stateLock;
+    std::atomic<int> currentIndex { 0 };
     juce::String currentName;
     std::atomic<bool> modified { false };
     std::atomic<bool> loading { false };

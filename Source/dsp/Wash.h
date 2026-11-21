@@ -5,10 +5,11 @@
 //           its own damping filters and decay gain; half the lines are slowly
 //           modulated for a chorused tail.
 //
-// Shimmer lives *inside* the loop: two of the lines can have their feedback
-// replaced by a pitch-shifted copy, so every trip round the network climbs
-// (or drops) by the interval - the cascading octave - while the loop itself
-// stays passive: there is no outer feedback path whose gain could exceed one.
+// Shimmer lives *inside* the loop: six of the lines add a pitch-shifted copy
+// of themselves on every trip round the network, so the tail keeps climbing
+// (or dropping) by the interval - the cascading octave. The copy is limited
+// to the energy that line has just lost to decay, so those lines can never
+// put out more than they took in: no setting can make the loop grow.
 // Freeze raises the decay gains to unity and closes the input.
 #pragma once
 
@@ -231,7 +232,7 @@ public:
             const float dryL = l[s], dryR = r[s];
             const float frz = freezeS.next();
             const float inGain = (gate.flushing ? 0.0f : 1.0f) * (1.0f - frz);
-            const float shimmer = shimS.next() * (1.0f - frz) * 0.85f;
+            const float shimmer = shimS.next() * (1.0f - frz);
             const float m = gate.mix.next();
 
             bool shimChanged = false;
@@ -293,16 +294,21 @@ public:
                 outR += v[i] * kOutR[i];
             }
 
-            // shimmer: four lines recirculate through pitch shifters (power-preserving blend)
+            // shimmer: six lines add a pitch-shifted copy of themselves. The copy's energy is capped at what
+            // that line has just lost to its decay gain, so each of those lines stays passive (never more out
+            // than in) however the controls are set, while the un-shifted tail keeps its body.
             if (shimmer > 1.0e-4f || shimmerTail > 0)
             {
                 const float amt = shimmer * shimSw;
-                const float keep = std::cos (amt * (0.5f * kPi)), shift = std::sin (amt * (0.5f * kPi));
                 for (int k = 0; k < kShimLines; ++k)
                 {
                     const int idx = kShimLine[k];
+                    const float g = lerp (lineGain[idx], 1.0f, frz);
+                    // v = g * x  ->  v + s * shift (v) has energy g^2 (1 + s^2) x^2 <= x^2  when  s^2 <= 1 / g^2 - 1
+                    const float sMax2 = std::min (4.0f, 1.0f / std::max (g * g, 0.05f) - 1.0f);
+                    const float sGain = std::sqrt (std::max (0.0f, amt * sMax2));
                     const float shifted = shiftHp[k].hp (shifter[k].process (shiftLp[k].process (v[idx])));
-                    v[idx] = keep * v[idx] + shift * shifted;
+                    v[idx] += sGain * shifted;
                 }
                 shimmerTail = shimmer > 1.0e-4f ? shifterFlush : shimmerTail - 1;
             }
@@ -358,10 +364,10 @@ private:
         switch (mode)
         {
             default:
-            case 0: ratios = { 2.0f, 2.0f, 2.0f, 2.0f }; break;
-            case 1: ratios = { 1.4983f, 1.4983f, 1.4983f, 1.4983f }; break;
-            case 2: ratios = { 0.5f, 0.5f, 0.5f, 0.5f }; break;
-            case 3: ratios = { 2.0f, 0.5f, 2.0f, 0.5f }; break;
+            case 0: ratios.fill (2.0f); break;
+            case 1: ratios.fill (1.4983f); break;
+            case 2: ratios.fill (0.5f); break;
+            case 3: ratios = { 2.0f, 0.5f, 2.0f, 0.5f, 2.0f, 0.5f }; break;
         }
         for (int k = 0; k < kShimLines; ++k)
             shifter[k].setRatio (ratios[static_cast<size_t> (k)]);
@@ -393,8 +399,8 @@ private:
     static constexpr float kInSign[kLines] = { 1, 1, -1, -1, 1, -1, 1, -1, -1, 1, 1, -1, -1, -1, 1, 1 };
     static constexpr float kOutL[kLines] = { 1, 0, -1, 0, 1, 0, 1, 0, -1, 0, -1, 0, 1, 0, -1, 0.0f };
     static constexpr float kOutR[kLines] = { 0, 1, 0, -1, 0, -1, 0, 1, 0, 1, 0, -1, 0, -1, 0, 1.0f };
-    static constexpr int kShimLines = 4;
-    static constexpr int kShimLine[kShimLines] = { 3, 6, 9, 12 };
+    static constexpr int kShimLines = 6;
+    static constexpr int kShimLine[kShimLines] = { 2, 5, 7, 8, 11, 13 };
 
     DelayLine lines[kLines];
     Lfo lfo[kLines];

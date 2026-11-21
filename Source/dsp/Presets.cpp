@@ -172,7 +172,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::ampDrive, 0.2f }, { P::ampCab, Open212 },
             { P::modMode, Ensemble }, { P::modRate, 0.28f }, { P::modDepth, 0.6f }, { P::modMix, 0.45f },
             { P::focTime, 420.0f }, { P::focFeedback, 0.6f }, { P::focHaze, 0.7f }, { P::focMix, 0.5f },
-            { P::washDecay, 9.0f }, { P::washSize, 0.85f }, { P::washShimmer, 0.15f }, { P::washMix, 0.5f },
+            { P::washDecay, 9.0f }, { P::washSize, 0.85f }, { P::washShimmer, 0.1f }, { P::washMix, 0.5f },
             { P::tapeAge, 0.4f },
         }));
 
@@ -309,7 +309,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::fuzzType, Octave }, { P::fuzzVoice, Flat }, { P::fuzzSustain, 0.65f }, { P::fuzzTone, 0.6f }, { P::fuzzStack, 0.3f },
             { P::ampCab, Chime112 },
             { P::focMix, 0.2f }, { P::modMix, 0.1f },
-            { P::washDecay, 8.0f }, { P::washShimmer, 0.35f }, { P::washDamp, 8000.0f }, { P::washMix, 0.45f },
+            { P::washDecay, 8.0f }, { P::washShimmer, 0.3f }, { P::washDamp, 8000.0f }, { P::washMix, 0.45f },
         }));
 
     p.push_back (build ("Velcro Bloom", "Wall",
@@ -339,7 +339,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::ampCab, Open212 },
             { P::revOn, 1.0f }, { P::revMode, TapeRev }, { P::revTime, 500.0f }, { P::revFeedback, 0.4f }, { P::revMix, 0.5f },
             { P::modMode, Phaser }, { P::modRate, 0.2f }, { P::modMix, 0.3f }, { P::focMix, 0.1f },
-            { P::washDecay, 4.0f }, { P::washShimmer, 0.2f }, { P::washMix, 0.55f },
+            { P::washDecay, 4.0f }, { P::washShimmer, 0.15f }, { P::washMix, 0.55f },
         }, { S::Glide, S::Reverse, S::Wash, S::Fuzz, S::Amp, S::Mod, S::Focus }));
 
     p.push_back (build ("Blanket Fuzz", "Wall",
@@ -362,7 +362,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::ampDrive, 0.2f },
             { P::modMode, Ensemble }, { P::modMix, 0.3f },
             { P::focTime, 500.0f }, { P::focFeedback, 0.6f }, { P::focHaze, 0.8f }, { P::focMix, 0.45f },
-            { P::washDecay, 25.0f }, { P::washSize, 1.0f }, { P::washPre, 80.0f }, { P::washMod, 0.6f }, { P::washShimmer, 0.2f },
+            { P::washDecay, 25.0f }, { P::washSize, 1.0f }, { P::washPre, 80.0f }, { P::washMod, 0.6f }, { P::washShimmer, 0.14f },
             { P::washDamp, 6000.0f }, { P::washDuck, 0.25f }, { P::washMix, 0.65f },
         }));
 
@@ -373,7 +373,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::glideWobble, 3.0f }, { P::glideDrift, 6.0f }, { P::glideDip, 0.0f },
             { P::ampDrive, 0.2f }, { P::ampCab, Chime112 },
             { P::focMix, 0.25f }, { P::modMix, 0.2f },
-            { P::washDecay, 12.0f }, { P::washSize, 0.9f }, { P::washShimmer, 0.65f }, { P::washShimMode, OctUp },
+            { P::washDecay, 12.0f }, { P::washSize, 0.9f }, { P::washShimmer, 0.7f }, { P::washShimMode, OctUp },
             { P::washDamp, 9000.0f }, { P::washMix, 0.6f },
         }));
 
@@ -383,7 +383,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::glideWobble, 4.0f }, { P::glideDrift, 8.0f }, { P::glideDip, 0.0f },
             { P::ampDrive, 0.2f },
             { P::focHaze, 0.7f }, { P::focMix, 0.4f }, { P::modMix, 0.2f },
-            { P::washDecay, 18.0f }, { P::washShimmer, 0.4f }, { P::washShimMode, FifthUp }, { P::washDamp, 5000.0f }, { P::washMix, 0.6f },
+            { P::washDecay, 18.0f }, { P::washShimmer, 0.35f }, { P::washShimMode, FifthUp }, { P::washDamp, 5000.0f }, { P::washMix, 0.6f },
         }));
 
     p.push_back (build ("Undertow", "Ambient",
@@ -392,7 +392,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::fuzzVoice, Full }, { P::fuzzSustain, 0.4f }, { P::fuzzTone, 0.3f }, { P::fuzzMix, 0.3f }, { P::fuzzLevel, -4.0f },
             { P::ampDrive, 0.3f },
             { P::focMix, 0.3f }, { P::modMix, 0.15f },
-            { P::washDecay, 20.0f }, { P::washShimmer, 0.5f }, { P::washShimMode, OctDown }, { P::washDamp, 2800.0f },
+            { P::washDecay, 20.0f }, { P::washShimmer, 0.45f }, { P::washShimMode, OctDown }, { P::washDamp, 2800.0f },
             { P::washLow, 60.0f }, { P::washMix, 0.6f },
         }));
 
@@ -413,7 +413,7 @@ std::vector<PresetDef> makeFactoryPresets()
             { P::ampDrive, 0.2f }, { P::ampCab, Chime112 },
             { P::revOn, 1.0f }, { P::revMode, Both }, { P::revTime, 800.0f }, { P::revFeedback, 0.5f }, { P::revMix, 0.4f },
             { P::focMix, 0.3f }, { P::modMode, Ensemble }, { P::modMix, 0.25f },
-            { P::washDecay, 14.0f }, { P::washShimmer, 0.45f }, { P::washShimMode, UpDown }, { P::washMix, 0.55f },
+            { P::washDecay, 14.0f }, { P::washShimmer, 0.4f }, { P::washShimMode, UpDown }, { P::washMix, 0.55f },
             { P::outWidth, 1.2f },
         }));
 
