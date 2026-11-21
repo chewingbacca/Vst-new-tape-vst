@@ -56,11 +56,19 @@ public:
 
     void process (float* l, float* r, int n, const Params& p) noexcept
     {
-        if (! gate.begin (p.on, p.mix, n, static_cast<int> (0.08f * fs), first))
+        if (! gate.begin (p.on, p.mix, n, 0, first))
         {
+            for (int i = 0; i < n; ++i)
+            {
+                chans[0].line.push (l[i]);                    // keep the lines current so waking is seamless
+                chans[1].line.push (r[i]);
+            }
             first = false;
             return;
         }
+
+        if (gate.woke)
+            clearState();     // the delay line was kept current while asleep; only feedback memory is stale
 
         rateS.target = std::clamp (p.rate, 0.01f, 12.0f);
         depthS.target = clamp01 (p.depth);
@@ -101,7 +109,7 @@ public:
             for (int ch = 0; ch < 2; ++ch)
             {
                 auto& c = chans[ch];
-                const float in = gate.flushing ? 0.0f : io[ch][i];
+                const float in = io[ch][i];
                 // right channel LFO leads by up to a quarter cycle (half for the sweeps) as width opens
                 const float side = ch == 0 ? 0.0f : width;
                 float wet = 0.0f;
@@ -168,6 +176,7 @@ public:
                         const float hz = 240.0f * std::pow (1.0f + 14.0f * depth, sweep);
                         const float t = std::tan (kPi * std::min (hz, 0.45f * fs) / fs);
                         const float a = (t - 1.0f) / (t + 1.0f);
+                        c.line.push (in);   // unused here, but kept current for a clean switch to the delay modes
                         float x = in + c.fb * (0.15f + 0.72f * color);
                         for (auto& z : c.apZ)
                         {

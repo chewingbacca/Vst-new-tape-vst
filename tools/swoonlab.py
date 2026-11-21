@@ -9,7 +9,7 @@ TMP = os.environ.get("SWOON_TMP", tempfile.gettempdir())
 
 
 def render(name, signal="strum", solo=None, bare=False, preset=None, sets=None, seconds=10.0, tail=4.0,
-           level=-12.0, sr=48000, block=256, keep_input=False):
+           level=-12.0, sr=48000, block=256, keep_input=False, events=None, cycle_presets=None):
     out = os.path.join(TMP, name + ".wav")
     cmd = [RENDER, "render", "--out", out, "--signal", signal, "--seconds", str(seconds), "--tail", str(tail),
            "--level", str(level), "--sr", str(sr), "--block", str(block)]
@@ -18,6 +18,10 @@ def render(name, signal="strum", solo=None, bare=False, preset=None, sets=None, 
     if preset is not None: cmd += ["--preset", str(preset)]
     for k, v in (sets or {}).items():
         cmd += ["--set", f"{k}={v}"]
+    for (t, k, v) in (events or []):
+        cmd += ["--at", f"{t}:{k}={v}"]
+    if cycle_presets:
+        cmd += ["--cycle-presets", str(cycle_presets)]
     if keep_input:
         cmd += ["--write-input", os.path.join(TMP, name + "_in.wav")]
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -71,3 +75,23 @@ def render_array(name, x, fs=48000, **kw):
     path = os.path.join(TMP, name + "_src.wav")
     sf.write(path, x.astype(np.float32), fs, subtype="FLOAT")
     return render(name, signal="file:" + path, seconds=0, sr=fs, **kw)
+
+
+def click_report(x, fs, event_times, hp_hz=6000.0, window_ms=30.0):
+    """High-passes the output and compares the peak near each event with the steady level elsewhere.
+    Returns (worst_event_peak_db, steady_p999_db, worst_time)."""
+    from scipy.signal import butter, sosfilt
+    sos = butter(6, hp_hz, btype="high", fs=fs, output="sos")
+    h = np.max(np.abs(sosfilt(sos, x, axis=0)), axis=1)
+    w = int(window_ms * 0.001 * fs)
+    near = np.zeros(len(h), dtype=bool)
+    worst, worst_t = -200.0, None
+    for t in event_times:
+        a = max(0, int(t * fs) - w // 6); b = min(len(h), int(t * fs) + w)
+        near[a:b] = True
+        if b > a:
+            v = db(h[a:b].max())
+            if v > worst:
+                worst, worst_t = v, t
+    steady = h[~near]
+    return worst, db(np.percentile(steady, 99.9)) if len(steady) else -200.0, worst_t

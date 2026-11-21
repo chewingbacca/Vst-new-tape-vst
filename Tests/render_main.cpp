@@ -5,6 +5,7 @@
 //                       [--sr 48000] [--block 256] [--seconds 10] [--tail 4] [--level -12]
 //                       [--preset "Name"|index] [--solo fuzz|glide|...] [--bare] [--set id=value]...
 //                       [--write-input in.wav]
+//                       [--at time:id=value]... [--cycle-presets seconds]
 //   swoon_render list-presets
 //   swoon_render list-params
 //   swoon_render bench [--preset ...] [--sr 48000] [--block 256]
@@ -13,6 +14,7 @@
 #include "dsp/Engine.h"
 #include "dsp/Presets.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +35,11 @@ struct Options
     float levelDb = -12.0f;
     bool bare = false;
     std::vector<std::pair<std::string, float>> sets;
+
+    // automation: parameter changes at given times (seconds), and/or stepping through all factory presets
+    struct Event { double time; std::string id; float value; };
+    std::vector<Event> events;
+    double cyclePresets = 0.0;     // > 0: load the next factory preset every N seconds
 };
 
 const std::map<std::string, P>& moduleSwitches()
@@ -131,10 +138,37 @@ Stereo makeSignal (const Options& o)
     return s;
 }
 
-void processAll (Engine& engine, Stereo& s, const ParamValues& pv, int block)
+void processAll (Engine& engine, Stereo& s, ParamValues pv, int block, const Options* o = nullptr)
 {
+    size_t nextEvent = 0;
+    int presetIndex = -1;
+
     for (size_t pos = 0; pos < s.size(); pos += static_cast<size_t> (block))
     {
+        const double t = static_cast<double> (pos) / s.sampleRate;
+        if (o != nullptr)
+        {
+            while (nextEvent < o->events.size() && o->events[nextEvent].time <= t)
+            {
+                const auto& e = o->events[nextEvent++];
+                const P p = paramFromId (e.id);
+                if (p != P::Count)
+                    pv[p] = e.value;
+            }
+            if (o->cyclePresets > 0.0)
+            {
+                const int idx = static_cast<int> (t / o->cyclePresets) % static_cast<int> (factoryPresets().size());
+                if (idx != presetIndex)
+                {
+                    presetIndex = idx;
+                    const float bypass = pv[P::bypass], inGain = pv[P::inGain];
+                    pv = presetValues (factoryPresets()[static_cast<size_t> (idx)]);
+                    pv[P::bypass] = bypass;
+                    pv[P::inGain] = inGain;
+                }
+            }
+        }
+
         const int n = static_cast<int> (std::min (static_cast<size_t> (block), s.size() - pos));
         engine.process (s.l.data() + pos, s.r.data() + pos, n, pv);
     }
@@ -155,7 +189,7 @@ int cmdRender (const Options& o)
     Engine engine;
     engine.prepare (o.sr, o.block);
     const auto t0 = std::chrono::steady_clock::now();
-    processAll (engine, s, pv, o.block);
+    processAll (engine, s, pv, o.block, &o);
     const double elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
 
     if (! o.out.empty() && ! testsig::writeWav (o.out, s))
@@ -234,6 +268,21 @@ int main (int argc, char** argv)
         else if (a == "--solo") o.solo = next();
         else if (a == "--bare") o.bare = true;
         else if (a == "--write-input") o.writeInput = next();
+        else if (a == "--cycle-presets") o.cyclePresets = std::atof (next().c_str());
+        else if (a == "--at")
+        {
+            // --at 1.5:id=value   (applied at the first block boundary at or after that time)
+            const std::string spec = next();
+            const auto colon = spec.find (':');
+            const auto eq = spec.find ('=');
+            if (colon == std::string::npos || eq == std::string::npos || eq < colon)
+            {
+                std::fprintf (stderr, "--at expects time:id=value\n");
+                return 1;
+            }
+            o.events.push_back ({ std::atof (spec.substr (0, colon).c_str()), spec.substr (colon + 1, eq - colon - 1),
+                                  static_cast<float> (std::atof (spec.substr (eq + 1).c_str())) });
+        }
         else if (a == "--set")
         {
             const std::string kv = next();
@@ -251,6 +300,9 @@ int main (int argc, char** argv)
             return 1;
         }
     }
+
+    std::stable_sort (o.events.begin(), o.events.end(),
+                      [] (const Options::Event& a, const Options::Event& b) { return a.time < b.time; });
 
     if (o.command == "render")
         return cmdRender (o);

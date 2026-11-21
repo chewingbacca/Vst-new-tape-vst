@@ -85,8 +85,13 @@ public:
 
     void process (float* l, float* r, int n, const Params& p) noexcept
     {
-        if (! gate.begin (p.on, p.mix, n, static_cast<int> (0.12f * fs), first))
+        if (! gate.begin (p.on, p.mix, n, 0, first))
         {
+            for (int i = 0; i < n; ++i)
+            {
+                heads[0].line.push (l[i]);                    // keep the lines current so waking is seamless
+                heads[1].line.push (r[i]);
+            }
             first = false;
             return;
         }
@@ -118,8 +123,8 @@ public:
         float* io[2] = { l, r };
         for (int i = 0; i < n; ++i)
         {
-            const float inL = gate.flushing ? 0.0f : io[0][i];
-            const float inR = gate.flushing ? 0.0f : io[1][i];
+            const float inL = io[0][i];
+            const float inR = io[1][i];
 
             // ---- strum detector -> dip envelope ----------------------------------------
             const float peak = std::max (std::abs (inL), std::abs (inR));

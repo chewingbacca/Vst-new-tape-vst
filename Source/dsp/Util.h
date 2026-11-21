@@ -371,37 +371,60 @@ struct EnvFollower
 struct ModuleGate
 {
     Smooth mix;
-    int flushRemaining = 0;
-    bool flushing = false;
+    int flushRemaining = 0, warmRemaining = 0;
+    bool flushing = false, asleep = true, woke = false;
 
     void prepare (float rate) noexcept
     {
         mix.setTime (0.012f, rate);
-        mix.snap (0.0f);
-        flushRemaining = 0;
-        flushing = false;
+        reset();
     }
 
     void reset() noexcept
     {
         mix.snap (0.0f);
-        flushRemaining = 0;
+        flushRemaining = warmRemaining = 0;
         flushing = false;
+        asleep = true;
+        woke = false;
     }
 
-    /** Returns false when the module can be skipped for this chunk. */
-    bool begin (bool on, float mixTarget, int numSamples, int flushSamples, bool snapNow) noexcept
+    /** Returns false when the module can be skipped for this chunk. `woke` is true for the first chunk after sleeping.
+        warmupSamples: how long a module with internal latency must run before its wet signal is valid;
+        the mix is held at zero for that long after waking so the wet path never starts mid-air. */
+    bool begin (bool on, float mixTarget, int numSamples, int flushSamples, bool snapNow, int warmupSamples = 0) noexcept
     {
-        mix.target = on ? clamp01 (mixTarget) : 0.0f;
-        if (snapNow)
-            mix.snap();
+        const float target = on ? clamp01 (mixTarget) : 0.0f;
 
-        if (mix.target > 0.0f)
+        woke = false;
+        if (target > 0.0f)
         {
+            if (asleep && ! snapNow)
+                warmRemaining = warmupSamples;
+            woke = asleep;
+            asleep = false;
             flushing = false;
             flushRemaining = flushSamples;
+
+            if (warmRemaining > 0)
+            {
+                warmRemaining -= numSamples;
+                mix.target = 0.0f;
+            }
+            else
+            {
+                mix.target = target;
+            }
+            if (snapNow)
+                mix.snap (target);
             return true;
         }
+
+        mix.target = 0.0f;
+        if (snapNow)
+            mix.snap();
+        warmRemaining = 0;
+
         if (mix.y > 1.0e-4f)
         {
             flushing = false;
@@ -409,13 +432,14 @@ struct ModuleGate
         }
 
         mix.y = 0.0f;
-        if (flushRemaining > 0)
+        if (! asleep && flushRemaining > 0)
         {
             flushRemaining -= numSamples;
             flushing = true;
             return true;
         }
         flushing = false;
+        asleep = true;
         return false;
     }
 };

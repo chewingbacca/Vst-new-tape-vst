@@ -171,11 +171,15 @@ public:
                 dryBuf[ch][i] = chans[ch].dry.read (latency);
             }
 
-        const bool active = gate.begin (p.on, p.mix, n, static_cast<int> (0.25f * fs), first);
+        const bool active = gate.begin (p.on, p.mix, n, static_cast<int> (0.25f * fs), first, latency + kChunk);
         if (! active)
         {
             for (int ch = 0; ch < 2; ++ch)
+            {
+                for (int i = 0; i < n; ++i)
+                    chans[ch].stackLine.push (io[ch][i]);     // keep the line current so waking is seamless
                 std::memcpy (io[ch], dryBuf[ch], static_cast<size_t> (n) * sizeof (float));
+            }
             first = false;
             return;
         }
@@ -212,8 +216,8 @@ public:
         float pre[2][kChunk];
         for (int i = 0; i < n; ++i)
         {
-            const float inL = gate.flushing ? 0.0f : io[0][i];
-            const float inR = gate.flushing ? 0.0f : io[1][i];
+            const float inL = io[0][i];
+            const float inR = io[1][i];
 
             const float peak = std::max (std::abs (inL), std::abs (inR));
             const float ef = envFast.process (peak);
@@ -236,7 +240,7 @@ public:
                 c.stackLine.push (in[ch]);
                 c.stackDelay.target = c.stackTarget;
                 const float d = c.stackDelay.next() + static_cast<float> (kStackBase);
-                pre[ch][i] = c.stackLine.readCubic (d) * gg;
+                pre[ch][i] = gate.flushing ? 0.0f : c.stackLine.readCubic (d) * gg;
             }
         }
 

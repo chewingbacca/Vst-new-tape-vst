@@ -350,7 +350,11 @@ public:
         if (! gate.begin (p.on, p.mix, n, static_cast<int> (0.05f * fs), first))
         {
             for (int ch = 0; ch < 2; ++ch)
+            {
+                for (int i = 0; i < n; ++i)
+                    chans[ch].line.push (io[ch][i]);          // keep the line current so waking is seamless
                 std::memcpy (io[ch], dryBuf[ch], static_cast<size_t> (n) * sizeof (float));
+            }
             first = false;
             return;
         }
@@ -408,8 +412,8 @@ public:
             for (int ch = 0; ch < 2; ++ch)
             {
                 auto& c = chans[ch];
-                c.line.push (gate.flushing ? 0.0f : io[ch][i]);
-                float x = c.line.readCubic (delay);
+                c.line.push (io[ch][i]);
+                float x = gate.flushing ? 0.0f : c.line.readCubic (delay);
                 x = c.preEmph.process (x);
                 x = c.sat.process (x * gain) * makeup;
                 x = c.deEmph.process (x);

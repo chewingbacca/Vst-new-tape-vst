@@ -56,6 +56,8 @@ struct Engine::Impl
     std::array<int, kNumSlots> order { 0, 1, 2, 3, 4, 5, 6 };
     std::array<int, kNumSlots> pendingOrder { 0, 1, 2, 3, 4, 5, 6 };
     float orderGain = 1.0f, orderStep = 0.01f;
+    int orderHold = 0;
+    bool orderArmed = false;
 
     void prepare (double sampleRate, int maxBlock)
     {
@@ -101,6 +103,8 @@ struct Engine::Impl
         for (auto& d : dryLine)
             d.reset();
         orderGain = 1.0f;
+        orderHold = 0;
+        orderArmed = false;
         first = true;
         meters = {};
     }
@@ -255,8 +259,65 @@ struct Engine::Impl
         meters.inPeak = std::max (meters.inPeak, inPeak);
 
         // ---- reorderable chain --------------------------------------------------------
+        // An order change must not put a step into any module's memory (delay lines, reverbs), so as well as
+        // dipping the chain's output we fade *every module's input* to silence, swap while nothing is flowing
+        // between modules, and fade back in. Reverb and delay tails survive the change and re-emerge after it.
+        const bool orderChanging = pendingOrder != order;
+        const bool fading = orderChanging || orderHold > 0 || orderGain < 1.0f;
+        float fade[kChunk];
+        if (fading)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                if (orderChanging)
+                    orderGain = std::max (0.0f, orderGain - orderStep);
+                else if (orderHold > 0)
+                    --orderHold;
+                else
+                    orderGain = std::min (1.0f, orderGain + orderStep);
+                fade[i] = smoothstep (orderGain);
+            }
+        }
+
         for (int s = 0; s < kNumSlots; ++s)
+        {
+            if (fading)
+                for (int i = 0; i < n; ++i)
+                {
+                    l[i] *= fade[i];
+                    r[i] *= fade[i];
+                }
             processSlot (order[static_cast<size_t> (s)], l, r, n, pv);
+        }
+        if (fading)
+            for (int i = 0; i < n; ++i)     // and the chain's output, so a tail that changes position isn't cut mid-swing
+            {
+                l[i] *= fade[i];
+                r[i] *= fade[i];
+            }
+
+        if (! orderChanging)
+            orderArmed = false;       // the change was withdrawn before the swap happened
+
+        if (orderChanging && orderGain <= 0.0f)
+        {
+            if (orderHold == 0 && ! orderArmed)
+            {
+                // inputs are silent: wait for the latency delay lines inside the modules to drain, then swap
+                orderHold = latency + 2 * kChunk;
+                orderArmed = true;
+            }
+            else if (orderArmed)
+            {
+                orderHold = std::max (0, orderHold - n);
+                if (orderHold == 0)
+                {
+                    order = pendingOrder;
+                    orderArmed = false;
+                    orderHold = kChunk;
+                }
+            }
+        }
 
         // ---- tape, then output stage --------------------------------------------------
         const float warmth = pv[P::warmth];
@@ -276,21 +337,15 @@ struct Engine::Impl
         op.warmShelfDb = (warmth - 0.5f) * 5.0f;
         output.process (l, r, n, op);
 
-        // ---- order switching fade, global mix, limiter, bypass ------------------------
-        const bool orderChanging = pendingOrder != order;
+        // ---- global mix, limiter, bypass ----------------------------------------------
         float outPeakL = 0.0f, outPeakR = 0.0f;
         bool bad = false;
 
         for (int i = 0; i < n; ++i)
         {
-            if (orderChanging)
-                orderGain = std::max (0.0f, orderGain - orderStep);
-            else if (orderGain < 1.0f)
-                orderGain = std::min (1.0f, orderGain + orderStep);
-
             const float mix = mixS.next();
-            float a = dry[0][i] * (1.0f - mix) + l[i] * mix * orderGain;
-            float b = dry[1][i] * (1.0f - mix) + r[i] * mix * orderGain;
+            float a = dry[0][i] * (1.0f - mix) + l[i] * mix;
+            float b = dry[1][i] * (1.0f - mix) + r[i] * mix;
             limiter.process (a, b);
 
             const float byp = bypassS.next();
@@ -303,9 +358,6 @@ struct Engine::Impl
             outPeakL = std::max (outPeakL, std::abs (a));
             outPeakR = std::max (outPeakR, std::abs (b));
         }
-
-        if (orderChanging && orderGain <= 0.0f)
-            order = pendingOrder;
 
         if (bad)
         {

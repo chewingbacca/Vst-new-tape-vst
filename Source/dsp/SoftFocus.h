@@ -173,6 +173,11 @@ public:
         // long enough to empty the delays at maximum feedback-free length plus the haze
         if (! gate.begin (p.on, p.mix, n, static_cast<int> (2.5f * fs), first))
         {
+            for (int i = 0; i < n; ++i)
+            {
+                chorus[0].push (l[i]);                        // keep the chorus lines current so waking is seamless
+                chorus[1].push (r[i]);
+            }
             first = false;
             return;
         }
@@ -213,8 +218,8 @@ public:
         for (int i = 0; i < n; ++i)
         {
             const float dryL = l[i], dryR = r[i];
-            const float inL = gate.flushing ? 0.0f : dryL;
-            const float inR = gate.flushing ? 0.0f : dryR;
+            const float inL = dryL, inR = dryR;
+            const float feed = gate.flushing ? 0.0f : 1.0f;
             const float time = timeS.next();
             const float fb = fbS.next();
             const float hz = hazeS.next();
@@ -230,8 +235,8 @@ public:
                 const float d = baseMs[v] * 0.001f * fs + depth[v] * lfo[v].sine();
                 voice[v] = chorus[v & 1].readCubic (std::max (2.0f, d));
             }
-            const float cL = 0.6f * (voice[0] + 0.7f * voice[2] + 0.3f * voice[3]);
-            const float cR = 0.6f * (voice[1] + 0.7f * voice[3] + 0.3f * voice[2]);
+            const float cL = feed * 0.6f * (voice[0] + 0.7f * voice[2] + 0.3f * voice[3]);
+            const float cR = feed * 0.6f * (voice[1] + 0.7f * voice[3] + 0.3f * voice[2]);
 
             // --- two long delays, cross-fed, filtered in the loop ---
             const float dL = delay[0].readCubic (std::max (4.0f, time));
