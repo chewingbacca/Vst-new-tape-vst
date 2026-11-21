@@ -1,0 +1,14 @@
+Swoon for macOS (universal: Apple silicon and Intel, macOS 12 or later)
+
+1. Copy Swoon.vst3       to  ~/Library/Audio/Plug-Ins/VST3/
+   Copy Swoon.component  to  ~/Library/Audio/Plug-Ins/Components/   (Audio Unit: Logic, GarageBand)
+   Swoon.app is the standalone version; put it anywhere.
+
+2. These builds are not signed with an Apple developer certificate, so macOS
+   quarantines them after download. Clear that once, in Terminal:
+
+     xattr -cr ~/Library/Audio/Plug-Ins/VST3/Swoon.vst3
+     xattr -cr ~/Library/Audio/Plug-Ins/Components/Swoon.component
+     xattr -cr /path/to/Swoon.app
+
+3. Rescan plugins in your DAW.

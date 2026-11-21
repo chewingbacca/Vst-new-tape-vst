@@ -1,0 +1,8 @@
+Swoon for Windows (64-bit)
+
+1. Copy the Swoon.vst3 folder to  C:\Program Files\Common Files\VST3\
+2. Rescan plugins in your DAW.
+
+Swoon.exe is the standalone version; run it from anywhere. Windows SmartScreen
+may warn because the build is not code-signed: choose "More info", then
+"Run anyway".
