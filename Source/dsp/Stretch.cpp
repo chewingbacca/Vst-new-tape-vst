@@ -9,36 +9,48 @@ namespace
 // audio between them absorbs the tempo change.
 struct TimeMap
 {
-    std::vector<double> xo, xi;      // breakpoints (output, input), ascending
+    std::vector<double> xo, xi;                       // breakpoints (output, input), ascending
+    std::vector<std::pair<double, double>> prot;      // protected (unity speed) output intervals
     double inLen = 1.0, outLen = 1.0;
 
-    void build (const std::vector<double>& onsets, double inLength, double outLength, double sampleRate)
+    // preWanted / postWanted: unity-speed time before / after each onset (samples)
+    void build (const std::vector<double>& onsetsIn, double inLength, double outLength, double preWanted, double postWanted)
     {
         inLen = inLength; outLen = outLength;
-        const double R = outLength / inLength;
-        xo.clear(); xi.clear();
-        xo.push_back (0.0); xi.push_back (0.0);
-        const double pre = 0.003 * sampleRate;
-        for (size_t i = 0; i < onsets.size(); ++i)
+        const double R = outLength / inLength, k = std::min (1.0, R);
+        // the loop start is treated as an onset too (there is nearly always a hit on the one)
+        std::vector<double> on { 0.0 };
+        for (double o : onsetsIn) if (o > on.back() + 0.02 * 48000.0 * 0.5 && o < inLength - 64.0) on.push_back (o);
+        xo.clear(); xi.clear(); prot.clear();
+        const size_t n = on.size();
+        std::vector<double> pre (n), post (n);
+        for (size_t i = 0; i < n; ++i)
         {
-            const double o = onsets[i];
-            const double next = i + 1 < onsets.size() ? onsets[i + 1] : inLength;
-            const double gap = next - o;
-            if (o < pre * 2.0 || gap < 0.02 * sampleRate) continue;
-            double post = std::min (0.045 * sampleRate, 0.45 * gap * std::min (1.0, R));
-            const double a0 = o * R - pre, a1 = o * R + post;
-            if (a0 <= xo.back() + 8.0) continue;
-            if (o + post >= inLength - 8.0 || a1 >= outLength - 8.0) continue;
-            // input must stay ahead of the previous breakpoint too
-            if (o - pre <= xi.back() + 8.0) continue;
-            xo.push_back (a0); xi.push_back (o - pre);
-            xo.push_back (a1); xi.push_back (o + post);
+            const double prevGap = i > 0 ? on[i] - on[i - 1] : (inLength - on[n - 1]) + on[0];
+            const double nextGap = i + 1 < n ? on[i + 1] - on[i] : (inLength - on[i]) + on[0];
+            pre[i] = std::min (preWanted, 0.3 * prevGap * k);
+            post[i] = std::min (postWanted, 0.5 * nextGap * k);
         }
+        // region 0 straddles the loop point: its tail [0, post0) opens the map and
+        // its head [outLen - pre0, outLen) closes it
+        xo.push_back (0.0); xi.push_back (0.0);
+        xo.push_back (post[0]); xi.push_back (post[0]);
+        prot.push_back ({ 0.0, post[0] });
+        for (size_t i = 1; i < n; ++i)
+        {
+            const double a0 = on[i] * R - pre[i], a1 = on[i] * R + post[i];
+            if (a0 <= xo.back() + 4.0 || on[i] - pre[i] <= xi.back() + 4.0) continue;
+            if (a1 >= outLength - pre[0] - 4.0 || on[i] + post[i] >= inLength - pre[0] - 4.0) continue;
+            xo.push_back (a0); xi.push_back (on[i] - pre[i]);
+            xo.push_back (a1); xi.push_back (on[i] + post[i]);
+            prot.push_back ({ a0, a1 });
+        }
+        xo.push_back (outLength - pre[0]); xi.push_back (inLength - pre[0]);
         xo.push_back (outLength); xi.push_back (inLength);
+        prot.push_back ({ outLength - pre[0], outLength });
     }
     double map (double t) const
     {
-        // periodic extension
         const double cyc = std::floor (t / outLen);
         t -= cyc * outLen;
         size_t i = hint < xo.size() - 1 ? hint : 0;
@@ -49,12 +61,10 @@ struct TimeMap
         const double f = span > 0.0 ? (t - xo[i]) / span : 0.0;
         return cyc * inLen + xi[i] + f * (xi[i + 1] - xi[i]);
     }
-    // true if output time t lies in a unity-speed (protected) region
     bool isProtected (double t) const
     {
         t = floorMod (t, outLen);
-        for (size_t i = 1; i + 1 < xo.size(); i += 2)
-            if (t >= xo[i] && t < xo[i + 1]) return true;
+        for (auto& p : prot) if (t >= p.first && t < p.second) return true;
         return false;
     }
     mutable size_t hint = 0;
@@ -82,7 +92,7 @@ void stretchTonal (const std::vector<float> in[2], std::vector<float> out[2], in
     std::vector<float> win ((size_t) n);
     for (int i = 0; i < n; ++i) win[(size_t) i] = (float) (0.5 - 0.5 * std::cos (kTwoPi * i / n));
 
-    TimeMap tm; tm.build (onsets, (double) inLength, (double) outLength, sampleRate);
+    TimeMap tm; tm.build (onsets, (double) inLength, (double) outLength, 0.003 * sampleRate, 0.045 * sampleRate);
 
     std::vector<float> re[2], im[2], pre[2], pim[2], yre[2], yim[2], norm ((size_t) outLength, 0.0f);
     for (int c = 0; c < 2; ++c) { re[c].resize ((size_t) n); im[c].resize ((size_t) n); pre[c].resize ((size_t) n); pim[c].resize ((size_t) n); yre[c].resize ((size_t) n); yim[c].resize ((size_t) n); }
@@ -203,7 +213,8 @@ void stretchBeats (const std::vector<float> in[2], std::vector<float> out[2], in
     const int hop = w / 2;
     const int search = std::max (16, (int) (0.010 * sampleRate));
     const int dec = std::max (1, (int) (sampleRate / 12000.0));     // decimation for the correlation search
-    TimeMap tm; tm.build (onsets, (double) inLength, (double) outLength, sampleRate);
+    // unity regions start early enough that no searched segment can smear a hit
+    TimeMap tm; tm.build (onsets, (double) inLength, (double) outLength, (double) (hop + search + 16), 0.045 * sampleRate);
     std::vector<float> mono ((size_t) inLength);
     for (int64_t i = 0; i < inLength; ++i) mono[(size_t) i] = 0.5f * (in[0][(size_t) i] + in[1][(size_t) i]);
     std::vector<float> norm ((size_t) outLength, 0.0f), win ((size_t) w);
@@ -216,11 +227,11 @@ void stretchBeats (const std::vector<float> in[2], std::vector<float> out[2], in
         const double tOut = (double) m * hop;
         const int64_t nominal = (int64_t) std::llround (tm.map (tOut));
         int64_t pos = nominal;
-        if (! first)
+        if (! first && ! tm.isProtected (tOut))
         {
             const int64_t natural = prevIn + hop;      // where the previous segment would continue
             if (std::llabs (natural - nominal) <= 2)
-                pos = natural;                          // unity region: exact copy
+                pos = natural;                          // already aligned: exact copy
             else
             {
                 // pick the offset whose segment best matches the natural continuation

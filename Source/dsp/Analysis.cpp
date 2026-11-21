@@ -94,7 +94,7 @@ LoopAnalysis analyseLoop (const AudioData& audio, double bpmHint)
     const double frameSec = (double) st.hop / sr;
     std::vector<float> flux ((size_t) st.frames, 0.0f);
     double flatSum = 0.0, flatW = 0.0;
-    const float gamma = 200.0f * normGain / (float) st.n * 4.0f;
+    const float gamma = 24.0f * normGain / (float) st.n * 4.0f;
     for (int f = 1; f < st.frames; ++f)
     {
         float sum = 0.0f;
@@ -113,6 +113,24 @@ LoopAnalysis analyseLoop (const AudioData& audio, double bpmHint)
     }
     a.percussiveness = (float) clampv (flatW > 0.0 ? (flatSum / flatW) * 4.0 : 0.5, 0.0, 1.0);
 
+    // band energies for the rise test below
+    constexpr int kBands = 4;
+    const double edges[kBands + 1] = { 0.0, 220.0, 1100.0, 5000.0, sr * 0.5 };
+    std::vector<float> bandE[kBands];
+    float bandMax[kBands] = {}, bandMaxAll = 0.0f;
+    for (int b = 0; b < kBands; ++b)
+    {
+        bandE[b].assign ((size_t) st.frames, 0.0f);
+        const int k0 = std::max (1, (int) (edges[b] * st.n / sr)), k1 = std::min (st.n / 2, (int) (edges[b + 1] * st.n / sr));
+        for (int f = 0; f < st.frames; ++f)
+        {
+            float e = 0.0f;
+            for (int k = k0; k < k1; ++k) e += st.mag[(size_t) f][(size_t) k] * st.mag[(size_t) f][(size_t) k];
+            bandE[b][(size_t) f] = e; bandMax[b] = std::max (bandMax[b], e);
+        }
+        bandMaxAll = std::max (bandMaxAll, bandMax[b]);
+    }
+
     // adaptive threshold: local mean over +-120 ms
     const int wnd = std::max (2, (int) (0.12 / frameSec));
     float fluxMax = 0.0f;
@@ -125,11 +143,27 @@ LoopAnalysis analyseLoop (const AudioData& audio, double bpmHint)
         for (int j = std::max (0, f - wnd); j <= std::min (st.frames - 1, f + wnd); ++j) { mean += flux[(size_t) j]; ++c; }
         mean /= (float) c;
         const float v = flux[(size_t) f];
-        if (v < mean * 1.3f + 0.02f * fluxMax) continue;
+        if (v < mean * 1.5f + 0.04f * fluxMax) continue;
         bool isMax = true;
         for (int j = std::max (0, f - nearF); j <= std::min (st.frames - 1, f + nearF); ++j) if (flux[(size_t) j] > v) { isMax = false; break; }
         if (! isMax) continue;
         if (! peakFrames.empty() && f - peakFrames.back() <= nearF) continue;
+        // a real onset raises the energy of at least one band; beating between
+        // the partials of a sustained chord moves the flux but not the energy
+        bool rises = v > 0.5f * fluxMax;      // a big spectral change counts by itself (legato notes)
+        for (int b = 0; b < kBands && ! rises; ++b)
+        {
+            if (bandMax[b] < 1.0e-7f * bandMaxAll) continue;
+            float before = 1.0e30f, after = 0.0f;
+            for (int j = std::max (0, f - 5); j <= std::max (0, f - 2); ++j) before = std::min (before, bandE[b][(size_t) j]);
+            for (int j = f; j <= std::min (st.frames - 1, f + 4); ++j) after = std::max (after, bandE[b][(size_t) j]);
+            float totalNow = 0.0f;
+            for (int bb = 0; bb < kBands; ++bb) totalNow += bandE[bb][(size_t) std::min (st.frames - 1, f + 1)];
+            const bool bigInMix = after > 2.0f * before && (after - before) > 0.05f * totalNow;
+            const bool fromNothing = after > 6.0f * before + 0.02f * bandMax[b];
+            if (bigInMix || fromNothing) rises = true;
+        }
+        if (! rises) continue;
         peakFrames.push_back (f);
     }
 
@@ -138,7 +172,7 @@ LoopAnalysis analyseLoop (const AudioData& audio, double bpmHint)
     for (int f : peakFrames)
     {
         const int64_t centre = (int64_t) f * st.hop;
-        const int64_t lo = std::max<int64_t> (0, centre - st.n / 2), hi = std::min<int64_t> (len - 1, centre + st.hop);
+        const int64_t lo = std::max<int64_t> (0, centre - st.n / 2), hi = std::min<int64_t> (len - 1, centre + st.n / 2);
         // envelope in 1 ms blocks
         std::vector<float> env;
         for (int64_t i = lo; i + envWin <= hi; i += envWin)
@@ -195,20 +229,10 @@ LoopAnalysis analyseLoop (const AudioData& audio, double bpmHint)
                 wsum += w;
             }
             fit = wsum > 0.0 ? fit / wsum : 0.5;
-            // on-beat emphasis: onsets on quarter notes
-            const double beatLen = dur / nb;
-            double onBeat = 0.0;
-            for (size_t i = 0; i < a.onsetTimes.size(); ++i)
-            {
-                const double ph = a.onsetTimes[i] / beatLen;
-                const double d = std::fabs (ph - std::round (ph)) * beatLen;
-                onBeat += ((double) a.onsetStrengths[i] + 0.1) * std::exp (-(d * d) / (2.0 * 0.012 * 0.012));
-            }
-            onBeat = wsum > 0.0 ? onBeat / wsum : 0.0;
-            const double lg = std::log2 (bpm / 118.0);
-            const double prior = std::exp (-(lg * lg) / (2.0 * 0.45 * 0.45));
+            const double lg = std::log2 (bpm / 112.0);
+            const double prior = std::exp (-(lg * lg) / (2.0 * 0.55 * 0.55));
             const bool pow2 = (nb & (nb - 1)) == 0;
-            const double score = prior * (0.35 + fit) * (0.8 + 0.4 * onBeat) * (pow2 ? 1.0 : 0.8);
+            const double score = prior * (0.35 + fit) * (pow2 ? 1.0 : 0.6);
             if (score > bestScore) { bestScore = score; bestBeats = nb; }
         }
         if (bestScore < 0.0)
@@ -275,28 +299,27 @@ SliceSet slicesFromOnsets (const LoopAnalysis& a, double loopSeconds, float sens
     SliceSet s;
     s.loopBeats = (float) a.beats;
     const double beatsPerSec = a.beats / std::max (1.0e-6, loopSeconds);
-    // threshold on relative strength: high sensitivity keeps weak onsets
-    const float thr = 0.6f * (1.0f - clampv (sensitivity, 0.0f, 1.0f)) * (1.0f - clampv (sensitivity, 0.0f, 1.0f));
-    const double minGapBeats = 1.0 / 16.0;
-    s.count = 0;
-    s.startBeat[s.count++] = 0.0f;
-    std::vector<std::pair<float, double>> picks;
+    const float sens = clampv (sensitivity, 0.0f, 1.0f);
+    const float thr = 0.6f * (1.0f - sens);                       // relative strength needed
+    const double minGap = 0.25 + (0.06 - 0.25) * (double) sens;   // beats between markers
+    std::vector<std::pair<float, double>> picks;                  // (strength, beat)
     for (size_t i = 0; i < a.onsetTimes.size(); ++i)
         if (a.onsetStrengths[i] >= thr) picks.push_back ({ a.onsetStrengths[i], a.onsetTimes[i] * beatsPerSec });
-    // keep the strongest if there are too many
-    if ((int) picks.size() > kMaxSlices - 1)
-    {
-        std::sort (picks.begin(), picks.end(), [] (auto& x, auto& y) { return x.first > y.first; });
-        picks.resize ((size_t) kMaxSlices - 1);
-    }
-    std::sort (picks.begin(), picks.end(), [] (auto& x, auto& y) { return x.second < y.second; });
+    // strongest first, so a weak neighbour never displaces a real hit
+    std::sort (picks.begin(), picks.end(), [] (auto& x, auto& y) { return x.first > y.first; });
+    std::vector<double> kept { 0.0 };
     for (auto& pk : picks)
     {
+        if ((int) kept.size() >= kMaxSlices) break;
         const double b = pk.second;
-        if (b < minGapBeats || b > a.beats - minGapBeats) continue;
-        if (b - (double) s.startBeat[s.count - 1] < minGapBeats) continue;
-        if (s.count < kMaxSlices) s.startBeat[s.count++] = (float) b;
+        if (b < minGap || b > a.beats - minGap * 0.5) continue;
+        bool clash = false;
+        for (double k : kept) if (std::fabs (k - b) < minGap) { clash = true; break; }
+        if (! clash) kept.push_back (b);
     }
+    std::sort (kept.begin(), kept.end());
+    s.count = (int) kept.size();
+    for (int i = 0; i < s.count; ++i) s.startBeat[i] = (float) kept[(size_t) i];
     return s;
 }
 } // namespace splinter

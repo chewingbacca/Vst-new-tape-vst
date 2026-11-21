@@ -510,4 +510,235 @@ TEST_CASE (limiter_never_exceeds_ceiling)
     CHECK_MSG (err < 1.0e-6, "err %g", err);
 }
 
+
+// ================================================================ harmoniser
+TEST_CASE (harmoniser_pitch_accuracy_and_latency)
+{
+    for (double sr : { 44100.0, 48000.0, 96000.0 })
+    {
+        for (double semis : { 3.0, 4.0, 7.0, 12.0, -5.0, -12.0 })
+        {
+            Harmonizer h; h.prepare (sr); h.setActive (true); h.setFormant (0.0f);
+            Harmonizer::Voice v; v.ratio = (float) semisToRatio (semis); v.gainL = v.gainR = 1.0f;
+            h.setVoice (0, v);
+            std::vector<float> out;
+            const double f0 = 330.0;
+            for (int i = 0; i < (int) sr; ++i)
+            {
+                const float x = 0.5f * (float) std::sin (kTwoPi * f0 * i / sr);
+                float l, r; h.process (x, x, l, r); out.push_back (l);
+            }
+            const double target = f0 * semisToRatio (semis);
+            const double f = dominantFrequency (out, sr, (size_t) (sr * 0.4), (size_t) (sr * 0.4), 60.0, 3000.0);
+            CHECK_MSG (std::fabs (centsBetween (f, target)) < 3.0, "sr %.0f shift %+.0f st: %.3f Hz (want %.3f, %.2f cents)", sr, semis, f, target, centsBetween (f, target));
+            const double level = rms (out, (size_t) (sr * 0.4), (size_t) (sr * 0.9));
+            CHECK_MSG (level > 0.28 && level < 0.42, "sr %.0f shift %+.0f st level %.3f", sr, semis, level);
+            // steadiness: envelope ripple of the shifted tone
+            double lo = 1e9, hi = 0.0;
+            for (size_t b = (size_t) (sr * 0.4); b + 512 < (size_t) (sr * 0.9); b += 512) { const double e = rms (out, b, b + 512); lo = std::min (lo, e); hi = std::max (hi, e); }
+            CHECK_MSG (hi / lo < 1.2, "sr %.0f shift %+.0f st ripple %.3f", sr, semis, hi / lo);
+        }
+        // unity ratio reproduces the input delayed by exactly fftSize
+        Harmonizer h; h.prepare (sr); h.setActive (true); h.setFormant (0.0f);
+        Harmonizer::Voice v; v.ratio = 1.0f; v.gainL = v.gainR = 1.0f; h.setVoice (0, v);
+        Rng rng (2); std::vector<float> in, out;
+        for (int i = 0; i < 30000; ++i) { const float x = 0.3f * rng.bipolar(); in.push_back (x); float l, r; h.process (x, x, l, r); out.push_back (l); }
+        double err = 0.0;
+        for (int i = h.fftSize() * 3; i < 30000; ++i) err = std::max (err, (double) std::fabs (out[(size_t) i] - in[(size_t) (i - h.fftSize())]));
+        CHECK_MSG (err < 2.0e-2, "sr %.0f unity err %g", sr, err);
+    }
+}
+
+TEST_CASE (harmoniser_preserves_formants)
+{
+    // source: harmonic tone with one strong formant at 1.2 kHz. Shift up 7 st and
+    // compare where the spectral energy peak sits with and without preservation.
+    const double sr = 48000.0, f0 = 150.0, formantHz = 1200.0;
+    auto run = [&] (float formant)
+    {
+        Harmonizer h; h.prepare (sr); h.setActive (true); h.setFormant (formant);
+        Harmonizer::Voice v; v.ratio = (float) semisToRatio (7.0); v.gainL = v.gainR = 1.0f; h.setVoice (0, v);
+        std::vector<float> out;
+        for (int i = 0; i < 48000; ++i)
+        {
+            double x = 0.0;
+            for (int k = 1; k * f0 < 6000.0; ++k)
+            {
+                const double d = (k * f0 - formantHz) / 250.0;
+                x += std::exp (-0.5 * d * d) * std::sin (kTwoPi * k * f0 * i / sr) + 0.02 * std::sin (kTwoPi * k * f0 * i / sr);
+            }
+            float l, r; h.process ((float) (0.2 * x), (float) (0.2 * x), l, r); out.push_back (l);
+        }
+        // spectral centroid of the output between 400 Hz and 4 kHz
+        double num = 0.0, den = 0.0;
+        for (double f = 400.0; f < 4000.0; f += 25.0)
+        {
+            double re = 0.0, im = 0.0;
+            for (int i = 24000; i < 24000 + 8192; ++i) { const double w = 0.5 - 0.5 * std::cos (kTwoPi * (i - 24000) / 8192.0); re += w * out[(size_t) i] * std::cos (kTwoPi * f * i / sr); im += w * out[(size_t) i] * std::sin (kTwoPi * f * i / sr); }
+            const double p = re * re + im * im; num += f * p; den += p;
+        }
+        return num / den;
+    };
+    const double plain = run (0.0f), kept = run (1.0f);
+    CHECK_MSG (plain > formantHz * 1.35, "plain centroid %.0f", plain);              // formant moved up with the pitch
+    CHECK_MSG (std::fabs (kept - formantHz) < formantHz * 0.12, "kept centroid %.0f", kept);
+}
+
+TEST_CASE (engine_harmony_voices_land_in_key)
+{
+    // A loop holding the note E4 in C major: a diatonic third above E is G (+3),
+    // a fifth above is B (+7); with Chromatic mode +4 is a plain major third.
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false;
+    const double e4 = 329.6276;
+    rig.sineLoop (4.0, e4, 0.4f);
+    const double src = std::round (e4 * 2.0) / 2.0;       // sineLoop rounds to the loop period
+    rig.params.harmony = 1.0f; rig.params.key = 0; rig.params.scale = 0; rig.params.harmMode = 0; rig.params.formant = 0.0f;
+    rig.params.voiceOn[0] = true; rig.params.voiceOn[1] = false; rig.params.voiceInterval[0] = 2; rig.params.voiceLevel[0] = 1.0f; rig.params.voicePan[0] = 0.0f;
+    rig.params.mix = 1.0f;
+    rig.render (48000 * 3);
+    // remove the fundamental by looking only above it
+    const double f = dominantFrequency (rig.outL, 48000.0, 48000 * 2, 16384, src * 1.1, 3000.0);
+    CHECK_MSG (std::fabs (centsBetween (f, src * semisToRatio (3.0))) < 6.0, "third: %.2f Hz, %.1f cents off", f, centsBetween (f, src * semisToRatio (3.0)));
+
+    Rig r2 (48000.0, 120.0); r2.params = rig.params; r2.params.voiceInterval[0] = 4;
+    r2.sineLoop (4.0, e4, 0.4f); r2.render (48000 * 3);
+    const double f5 = dominantFrequency (r2.outL, 48000.0, 48000 * 2, 16384, src * 1.1, 3000.0);
+    CHECK_MSG (std::fabs (centsBetween (f5, src * semisToRatio (7.0))) < 6.0, "fifth: %.2f Hz", f5);
+
+    Rig r3 (48000.0, 120.0); r3.params = rig.params; r3.params.harmMode = 1; r3.params.voiceInterval[0] = 4;
+    r3.sineLoop (4.0, e4, 0.4f); r3.render (48000 * 3);
+    const double f3 = dominantFrequency (r3.outL, 48000.0, 48000 * 2, 16384, src * 1.1, 3000.0);
+    CHECK_MSG (std::fabs (centsBetween (f3, src * semisToRatio (4.0))) < 6.0, "chromatic: %.2f Hz", f3);
+}
+
+// ================================================================ analysis and stretch
+TEST_CASE (demo_loops_are_clean_and_analysed_correctly)
+{
+    for (int i = 0; i < kNumDemoLoops; ++i)
+    {
+        const DemoLoopInfo& info = demoLoopInfo (i);
+        AudioData a; generateDemoLoop (i, 48000.0, a);
+        CHECK (! hasNonFinite (a.ch[0]) && ! hasNonFinite (a.ch[1]));
+        CHECK_MSG (peakAbs (a.ch[0]) <= 0.71f && peakAbs (a.ch[0]) > 0.3f, "%s peak %g", info.name, peakAbs (a.ch[0]));
+        CHECK (std::fabs (dcOffset (a.ch[0])) < 1.0e-3);
+        const double dur = (double) a.length() / 48000.0;
+        CHECK (std::fabs (dur - info.beats * 60.0 / info.bpm) < 1.0e-3);
+        const LoopAnalysis an = analyseLoop (a);
+        std::printf ("   %-12s bpm %.2f (true %.0f) beats %.0f onsets %zu key %d/%d conf %.2f perc %.2f\n", info.name, an.bpm, info.bpm, an.beats, an.onsetTimes.size(), an.key, an.scale, an.keyConfidence, an.percussiveness);
+        CHECK_MSG (std::fabs (an.bpm - info.bpm) < 0.5, "%s tempo %.2f", info.name, an.bpm);
+        CHECK (an.onsetTimes.size() >= 6);
+        if (! info.drums)
+        {
+            // the detected key must describe (nearly) the same set of notes
+            int shared = 0;
+            for (int k = 0; k < 7; ++k)
+                for (int m = 0; m < 7; ++m)
+                    if ((an.key + scaleDef (an.scale).steps[k]) % 12 == (info.key + scaleDef (info.scale).steps[m]) % 12) ++shared;
+            CHECK_MSG (shared >= 6, "%s key %d/%d shares %d notes with the true key", info.name, an.key, an.scale, shared);
+        }
+        const SliceSet sl = slicesFromOnsets (an, dur, 0.5f);
+        CHECK (sl.count >= 4 && sl.count <= kMaxSlices);
+        for (int k = 1; k < sl.count; ++k) CHECK (sl.startBeat[k] > sl.startBeat[k - 1]);
+    }
+}
+
+TEST_CASE (onset_detection_is_accurate_on_known_hits)
+{
+    const double sr = 48000.0;
+    AudioData a; a.sampleRate = sr; a.resize ((int64_t) (sr * 4));
+    const double times[] = { 0.0, 0.5, 0.75, 1.0, 1.5, 2.0, 2.25, 2.5, 3.0, 3.5 };
+    Rng rng (1);
+    for (double t : times)
+        for (int i = 0; i < 4000; ++i)
+        {
+            const float v = 0.6f * rng.bipolar() * (float) std::exp (-i / 600.0);
+            a.ch[0][(size_t) (t * sr) + (size_t) i] += v; a.ch[1][(size_t) (t * sr) + (size_t) i] += v;
+        }
+    const LoopAnalysis an = analyseLoop (a);
+    CHECK_MSG (std::fabs (an.bpm - 120.0) < 0.5, "bpm %.2f", an.bpm);
+    int matched = 0; double worst = 0.0;
+    for (double t : times)
+    {
+        if (t == 0.0) continue;
+        double best = 1.0;
+        for (double o : an.onsetTimes) best = std::min (best, std::fabs (o - t));
+        if (best < 0.004) ++matched;
+        worst = std::max (worst, best);
+    }
+    CHECK_MSG (matched == 9, "matched %d of 9, worst %.2f ms, found %zu", matched, worst * 1000.0, an.onsetTimes.size());
+    CHECK (an.onsetTimes.size() <= 11);
+}
+
+TEST_CASE (stretch_preserves_pitch_length_and_transients)
+{
+    const double sr = 48000.0;
+    for (double ratio : { 0.75, 1.25, 1.5 })
+    {
+        // tonal: steady chord
+        std::vector<float> in[2], out[2];
+        const int64_t n = 96000, outLen = (int64_t) (n * ratio);
+        for (int c = 0; c < 2; ++c) { in[c].resize ((size_t) n); for (int64_t i = 0; i < n; ++i) in[c][(size_t) i] = 0.3f * (float) (std::sin (kTwoPi * 220.0 * i / sr) + 0.5 * std::sin (kTwoPi * 554.5 * i / sr)); }
+        stretchTonal (in, out, outLen, {}, sr);
+        CHECK ((int64_t) out[0].size() == outLen);
+        const double f = dominantFrequency (out[0], sr, (size_t) (outLen / 3), 16384, 100.0, 400.0);
+        CHECK_MSG (std::fabs (centsBetween (f, 220.0)) < 3.0, "tonal ratio %.2f freq %.3f", ratio, f);
+        double lo = 1e9, hi = 0.0;
+        for (size_t b = 4096; b + 2048 < (size_t) outLen - 4096; b += 2048) { const double e = rms (out[0], b, b + 2048); lo = std::min (lo, e); hi = std::max (hi, e); }
+        CHECK_MSG (hi / lo < 1.15, "tonal ratio %.2f ripple %.3f", ratio, hi / lo);
+        const double inRms = rms (in[0]), outRms = rms (out[0]);
+        CHECK_MSG (std::fabs (outRms / inRms - 1.0) < 0.08, "tonal ratio %.2f level %.3f", ratio, outRms / inRms);
+
+        // beats: decaying noise hits every 12000 samples; they must land on ratio * position and stay sharp
+        std::vector<double> onsets; Rng rng (3);
+        for (int c = 0; c < 2; ++c) std::fill (in[c].begin(), in[c].end(), 0.0f);
+        for (int64_t t = 0; t < n; t += 12000)
+        {
+            if (t > 0) onsets.push_back ((double) t);
+            for (int i = 0; i < 6000; ++i) { const float v = 0.6f * rng.bipolar() * (float) std::exp (-i / 900.0); in[0][(size_t) (t + i)] = v; in[1][(size_t) (t + i)] = v; }
+        }
+        for (int mode = 0; mode < 2; ++mode)
+        {
+            if (mode == 0) stretchBeats (in, out, outLen, onsets, sr); else stretchTonal (in, out, outLen, onsets, sr);
+            double worst = 0.0, minSharp = 1e9;
+            for (int k = 1; k < 8; ++k)
+            {
+                const int64_t ideal = (int64_t) (k * 12000 * ratio);
+                // attack position = first sample above 30% of the local peak
+                float pk = 0.0f;
+                for (int64_t i = ideal - 2000; i < ideal + 2000; ++i) pk = std::max (pk, std::fabs (out[0][(size_t) i]));
+                int64_t at = ideal - 2000;
+                for (int64_t i = ideal - 2000; i < ideal + 2000; ++i) if (std::fabs (out[0][(size_t) i]) > 0.3f * pk) { at = i; break; }
+                worst = std::max (worst, std::fabs ((double) (at - ideal)));
+                // sharpness: energy just after the attack vs just before
+                const double before = rms (out[0], (size_t) (ideal - 700), (size_t) (ideal - 200)), after = rms (out[0], (size_t) ideal, (size_t) (ideal + 500));
+                minSharp = std::min (minSharp, after / (before + 1.0e-6));
+            }
+            CHECK_MSG (worst < (mode == 0 ? 96.0 : 300.0), "%s ratio %.2f attack off by %.0f samples", mode == 0 ? "beats" : "tonal", ratio, worst);
+            CHECK_MSG (minSharp > (mode == 0 ? 8.0 : 3.0), "%s ratio %.2f sharpness %.1f", mode == 0 ? "beats" : "tonal", ratio, minSharp);
+            CHECK (! hasNonFinite (out[0]));
+        }
+    }
+}
+
+TEST_CASE (render_loop_hits_exact_length_at_any_tempo_and_rate)
+{
+    AudioData a; generateDemoLoop (1, 44100.0, a);
+    LoopAnalysis an = analyseLoop (a);
+    for (double sr : { 44100.0, 96000.0 })
+        for (double bpm : { 90.0, 120.0, 174.0 })
+            for (auto mode : { StretchMode::Tonal, StretchMode::Beats, StretchMode::Tape })
+            {
+                RenderedLoop r; renderLoop (a, an, sr, bpm, mode, r);
+                const int64_t want = (int64_t) std::llround (an.beats * 60.0 / bpm * sr);
+                CHECK (r.length == want);
+                std::vector<float> v (r.channel (0), r.channel (0) + r.length);
+                CHECK (! hasNonFinite (v));
+                CHECK_MSG (peakAbs (v) < 1.2f && rms (v) > 0.02, "sr %.0f bpm %.0f mode %d peak %g rms %g", sr, bpm, (int) mode, peakAbs (v), rms (v));
+                // seamless: guard region mirrors the loop
+                CHECK (r.channel (0)[r.length] == r.channel (0)[0]);
+                CHECK (r.channel (0)[-1] == r.channel (0)[r.length - 1]);
+            }
+}
+
 int main (int argc, char** argv) { return testutil::runAll (argc > 1 ? argv[1] : nullptr); }
