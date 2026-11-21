@@ -259,21 +259,23 @@ void WaveformView::mouseDown (const MouseEvent& e)
         PopupMenu menu;
         if (m > 0) menu.addItem (1, "Remove marker " + String (m + 1));
         menu.addItem (2, "Add marker here", slices.count < kMaxSlices);
-        menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this).withMousePosition(), [this, m, beat = xToBeat (e.position.x)] (int r)
+        menu.showMenuAsync (PopupMenu::Options().withTargetComponent (this).withMousePosition(), [safe = Component::SafePointer<WaveformView> (this), m, beat = xToBeat (e.position.x)] (int r)
         {
+            if (safe == nullptr || r == 0) return;
+            auto& slices = safe->slices;
             if (r == 1 && m > 0 && m < slices.count)
             {
                 for (int i = m; i + 1 < slices.count; ++i) slices.startBeat[i] = slices.startBeat[i + 1];
-                --slices.count; commitSlices();
+                --slices.count; safe->commitSlices();
             }
             else if (r == 2 && slices.count < kMaxSlices)
             {
                 int at = slices.count;
                 for (int i = 0; i < slices.count; ++i) if (slices.startBeat[i] > beat) { at = i; break; }
                 for (int i = slices.count; i > at; --i) slices.startBeat[i] = slices.startBeat[i - 1];
-                slices.startBeat[at] = (float) beat; ++slices.count; commitSlices();
+                slices.startBeat[at] = (float) beat; ++slices.count; safe->commitSlices();
             }
-            repaint();
+            safe->repaint();
         });
         return;
     }

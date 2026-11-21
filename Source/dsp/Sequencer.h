@@ -154,18 +154,27 @@ public:
         run = LaneRun();
         if (! here.on) return run;
         int64_t first = step, last = step;
-        for (int i = 0; i < kMaxSteps; ++i)
+        int back = 0;
+        for (; back < kMaxSteps; ++back)
         {
             const StepState b = evalStep (s, lane, first - 1);
             if (! b.on || b.var != here.var) break;
             --first;
         }
-        for (int i = 0; i < kMaxSteps; ++i)
+        if (back >= kMaxSteps)
         {
-            const StepState f = evalStep (s, lane, last + 1);
-            if (! f.on || f.var != here.var) break;
-            ++last;
+            // the run never ends (a lane filled end to end): treat each pass of
+            // the pattern as one gesture so its start does not slide
+            const int n = std::max (1, s.pattern->numSteps);
+            first = floorDiv (step, n) * n; last = first + n - 1;
         }
+        else
+            for (int i = 0; i < kMaxSteps; ++i)
+            {
+                const StepState f = evalStep (s, lane, last + 1);
+                if (! f.on || f.var != here.var) break;
+                ++last;
+            }
         run.active = true;
         run.start = (double) first / (double) spb;
         run.length = (double) (last - first + 1) / (double) spb;

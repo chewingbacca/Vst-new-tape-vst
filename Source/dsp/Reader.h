@@ -259,8 +259,13 @@ class LiveRing
 public:
     void prepare (int capacitySamples)
     {
-        length = std::max (1024, capacitySamples);
-        for (auto& d : data) d.assign ((size_t) (length + 2 * kSourceGuard), 0.0f);
+        const int64_t wanted = std::max (1024, capacitySamples);
+        if (wanted != length)
+        {
+            length = wanted;
+            for (auto& d : data) d.assign ((size_t) (length + 2 * kSourceGuard), 0.0f);
+        }
+        else clear();
         writeAbs = 0;
     }
     void clear() { for (auto& d : data) std::fill (d.begin(), d.end(), 0.0f); }

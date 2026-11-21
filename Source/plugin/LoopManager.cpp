@@ -13,7 +13,7 @@ LoopManager::~LoopManager()
     cancelPendingUpdate();
     signalThreadShouldExit();
     notify();
-    stopThread (4000);
+    stopThread (60000);        // analysis of a long file is not interruptible; never kill the thread
     delete pending.exchange (nullptr);
     delete leaked.exchange (nullptr);
     delete current;
@@ -31,6 +31,7 @@ void LoopManager::submit (Job&& j)
     {
         const ScopedLock sl (lock);
         queuedJob = std::make_unique<Job> (std::move (j));
+        ++epoch;
         statusInfo.loading = true; statusInfo.error.clear();
     }
     busy.store (true);
@@ -58,7 +59,7 @@ void LoopManager::loadAudio (splinter::AudioData&& audio, const String& name, do
 void LoopManager::clear()
 {
     const ScopedLock sl (lock);
-    source.reset(); queuedJob.reset();
+    source.reset(); queuedJob.reset(); ++epoch;
     statusInfo = LoopInfo(); statusInfo.generation = ++generationCounter;
     clearRequest.store (true);
 }
@@ -181,7 +182,7 @@ MemoryBlock LoopManager::encodeFlac (const splinter::AudioData& a)
     return mb;
 }
 
-bool LoopManager::runJob (Job& job)
+bool LoopManager::runJob (Job& job, uint32_t jobEpoch)
 {
     auto s = std::make_shared<Source>();
     String error;
@@ -220,6 +221,7 @@ bool LoopManager::runJob (Job& job)
     if (error.isNotEmpty() || s->audio.length() < 256)
     {
         const ScopedLock sl (lock);
+        if (epoch != jobEpoch) return false;
         statusInfo.loading = false;
         statusInfo.error = error.isNotEmpty() ? error : String ("Empty audio");
         return false;
@@ -237,6 +239,7 @@ bool LoopManager::runJob (Job& job)
     computePeaks (*s);
     {
         const ScopedLock sl (lock);
+        if (epoch != jobEpoch) return false;          // a newer load (or a clear) superseded this one
         s->info.generation = ++generationCounter;
         source = s; statusInfo = s->info; statusInfo.loading = false;
         notifyKeepSlices = job.keepSlices;
@@ -262,6 +265,10 @@ void LoopManager::renderIfNeeded()
     auto* r = new RenderedLoop();
     renderLoop (s->audio, s->analysis, sr, bpm, (StretchMode) jlimit (0, 3, mode), *r);
     r->generation = s->info.generation;
+    {
+        const ScopedLock sl (lock);
+        if (source != s) { delete r; return; }        // the material changed while we were rendering
+    }
     renderedGen = s->info.generation; renderedSr = sr; renderedBpm = bpm; renderedMode = mode;
     delete pending.exchange (r, std::memory_order_acq_rel);
 }
@@ -274,20 +281,29 @@ void LoopManager::run()
         while (retired.pop (dead)) delete dead;
         delete leaked.exchange (nullptr);
 
-        std::unique_ptr<Job> job;
-        { const ScopedLock sl (lock); job = std::move (queuedJob); }
-        if (job != nullptr) runJob (*job);
-        renderIfNeeded();
+        std::unique_ptr<Job> job; uint32_t jobEpoch = 0;
+        { const ScopedLock sl (lock); job = std::move (queuedJob); jobEpoch = epoch; }
+        try
+        {
+            if (job != nullptr) runJob (*job, jobEpoch);
+            renderIfNeeded();
+        }
+        catch (const std::bad_alloc&)
+        {
+            const ScopedLock sl (lock);
+            statusInfo.loading = false; statusInfo.error = "Not enough memory for this loop";
+            renderedBpm = targetBpm.load(); renderedSr = targetSr.load(); renderedMode = targetMode.load(); renderedGen = statusInfo.generation;
+        }
 
-        bool more;
+        bool more, settled;
         {
             const ScopedLock sl (lock);
             more = queuedJob != nullptr;
+            const double bpm = targetBpm.load();
+            settled = ! more && (source == nullptr || targetSr.load() <= 0.0
+                                 || (renderedGen == statusInfo.generation && renderedSr == targetSr.load() && renderedMode == targetMode.load()
+                                     && std::fabs (bpm - renderedBpm) <= renderedBpm * 2.0e-4));
         }
-        const double bpm = targetBpm.load();
-        const bool settled = ! more && (source == nullptr || targetSr.load() <= 0.0
-                                        || (renderedGen == statusInfo.generation && renderedSr == targetSr.load() && renderedMode == targetMode.load()
-                                            && std::fabs (bpm - renderedBpm) <= renderedBpm * 2.0e-4));
         busy.store (! settled);
         passCount.fetch_add (1);
         if (settled) wait (40); else wait (more ? 1 : 15);

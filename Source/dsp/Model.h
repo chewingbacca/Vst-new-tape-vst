@@ -7,7 +7,7 @@ namespace splinter
 {
 constexpr int kNumSlots = 12;       // per bank: time curves, volume curves, sequences
 constexpr int kMaxSteps = 32;
-constexpr int kMaxNodes = 48;
+constexpr int kMaxNodes = 96;
 constexpr int kMaxSlices = 64;
 constexpr int kNumHarmVoices = 4;
 constexpr int kMaxSliceVoices = 8;

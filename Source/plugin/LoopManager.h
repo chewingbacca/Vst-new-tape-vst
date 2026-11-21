@@ -93,7 +93,7 @@ private:
     void run() override;
     void handleAsyncUpdate() override;
     void submit (Job&& j);
-    bool runJob (Job& job);
+    bool runJob (Job& job, uint32_t jobEpoch);
     void renderIfNeeded();
     static bool decode (juce::InputStream* stream, const juce::String& hint, splinter::AudioData& out, juce::String& error);
     static void computePeaks (Source& s);
@@ -105,6 +105,7 @@ private:
     LoopInfo statusInfo;
     bool notifyKeepSlices = false;
     uint32_t generationCounter = 0;
+    uint32_t epoch = 0;              // bumps on every submit / clear: stale work is dropped
 
     std::atomic<double> targetSr { 0.0 }, targetBpm { 120.0 };
     std::atomic<int> targetMode { 0 };

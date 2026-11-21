@@ -269,7 +269,7 @@ void CurvesPage::insertShape (int id)
                 case 2: for (float x = 0.0f; x < 0.999f; x += 2.0f / len) { c.add (x, 0.0f); c.add (jmin (1.0f, x + 2.0f / len), beatsToY (1.0f)); } c.setName ("Half x2"); break;
                 case 3: { const float x0 = 1.0f - 1.0f / len; c.add (0.0f, 0.0f); c.add (x0, 0.0f, 0.3333f); c.add (1.0f, beatsToY (0.5f)); c.setName ("Tape Stop"); break; }
                 case 4: c.add (0.0f, 0.0f); c.add (0.5f, 0.0f); c.add (1.0f, beatsToY (len)); c.setName ("Rewind"); break;
-                case 5: for (int i = 0; i < jmin (grid, kMaxNodes / 2); ++i) { const float x = (float) i / (float) grid; c.add (x, (i & 1) ? beatsToY (len / (float) grid) : 0.0f, 0.0f, true); } c.setName ("Repeats"); break;
+                case 5: for (int i = 0; i < jmin (grid, kMaxNodes / 2 - 1); ++i) { const float x = (float) i / (float) grid; c.add (x, (i & 1) ? beatsToY (len / (float) grid) : 0.0f, 0.0f, true); } c.setName ("Repeats"); break;
                 case 6: for (int i = 0; i < (int) len; ++i) c.add ((float) i / len, beatsToY ((float) i), 0.0f, true); c.setName ("Beat Hold"); break;
                 case 7: c.add (0.0f, 0.0f); c.add (1.0f, beatsToY (len * 2.0f)); c.setName ("Reverse"); break;
                 default:
@@ -289,7 +289,7 @@ void CurvesPage::insertShape (int id)
             {
                 case 0: c.add (0.0f, 1.0f); c.add (1.0f, 1.0f); c.setName ("Open"); break;
                 case 1: case 2:
-                    for (int i = 0; i < jmin (grid, kMaxNodes / 2); ++i) { const float x = (float) i / (float) grid; c.add (x, 1.0f, 0.0f, true); c.add (x + (id == 1 ? 0.5f : 0.25f) / (float) grid, 0.0f, 0.0f, true); }
+                    for (int i = 0; i < jmin (grid, kMaxNodes / 2 - 1); ++i) { const float x = (float) i / (float) grid; c.add (x, 1.0f, 0.0f, true); c.add (x + (id == 1 ? 0.5f : 0.25f) / (float) grid, 0.0f, 0.0f, true); }
                     c.setName (id == 1 ? "Gate" : "Tight Gate"); break;
                 case 3: for (int b = 0; b < (int) len; ++b) { const float x = (float) b / len; c.add (x, 0.08f, -0.55f); c.add (x + 0.8f / len, 1.0f); c.add (x + 0.999f / len, 1.0f); } c.setName ("Pump"); break;
                 case 4: for (int b = 0; b < (int) len; ++b) { const float x = (float) b / len; c.add (x, 0.0f, 0.0f, true); c.add (x + 0.5f / len, 1.0f, 0.0f, true); } c.setName ("Offbeat"); break;

@@ -74,7 +74,8 @@ public:
     void loadPresetData (const PresetData& d);
     bool saveUserPreset (const juce::String& name);
     bool loadUserPreset (const juce::File& f);
-    juce::String getPresetName() const { return presetName; }
+    juce::String getPresetName() const { const juce::ScopedLock sl (nameLock); return presetName; }
+    void setPresetName (const juce::String& n) { const juce::ScopedLock sl (nameLock); presetName = n; }
     int getFactoryIndex() const { return factoryIndex; }
     void generatePattern (int slot, uint32_t seed);   // "generate new pattern" for unlocked lanes
 
@@ -108,6 +109,7 @@ private:
     std::atomic<int> bankVersion { 0 };
 
     juce::String presetName { "Init" };
+    juce::CriticalSection nameLock;
     int factoryIndex = -1;
 
     std::vector<splinter::MidiEvent> midiScratch;

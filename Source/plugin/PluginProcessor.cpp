@@ -13,7 +13,7 @@ SplinterProcessor::SplinterProcessor()
 {
     bridge.attach (apvts);
     bypassParam = dynamic_cast<AudioParameterBool*> (apvts.getParameter (pid::bypass));
-    midiScratch.reserve (512);
+    midiScratch.reserve (2048);
 
     loops.onLoopChanged = [this] (bool keepSlices) { handleLoopChanged (keepSlices); };
 
@@ -42,7 +42,7 @@ void SplinterProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     currentSampleRate = sampleRate;
     engine.prepare (sampleRate, samplesPerBlock);
     setLatencySamples (engine.latencySamples());
-    scratch.setSize (2, jmax (16, samplesPerBlock * 2), false, true, true);
+    scratch.setSize (2, jmax (8192, samplesPerBlock * 2), false, true, true);
     dirty.store (allBits);
     bridge.fill (engineParams);
     loops.setTarget (sampleRate, internalBpm.load(), bridge.stretchMode());
@@ -88,7 +88,7 @@ void SplinterProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& mi
             const auto bpm = pos->getBpm(); const auto ppq = pos->getPpqPosition();
             if (bpm.hasValue() && ppq.hasValue() && *bpm > 1.0)
             {
-                tr.bpm = *bpm; tr.ppq = *ppq; tr.playing = pos->getIsPlaying(); hostValid = true;
+                tr.bpm = jlimit (20.0, 999.0, *bpm); tr.ppq = *ppq; tr.playing = pos->getIsPlaying(); hostValid = true;
             }
         }
     if (hostValid) hostTransportSeen.store (true, std::memory_order_relaxed);
@@ -122,12 +122,13 @@ void SplinterProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& mi
     midiScratch.clear();
     for (const auto meta : midi)
     {
-        const auto m = meta.getMessage();
-        if (midiScratch.size() >= midiScratch.capacity()) break;
+        // raw bytes: building a MidiMessage could allocate (SysEx)
+        if (meta.numBytes < 2 || meta.numBytes > 3 || midiScratch.size() >= midiScratch.capacity()) continue;
+        const int status = meta.data[0] & 0xf0, d1 = meta.data[1] & 0x7f, d2 = meta.numBytes > 2 ? (meta.data[2] & 0x7f) : 0;
         MidiEvent e; e.offset = jlimit (0, n - 1, meta.samplePosition);
-        if (m.isNoteOn()) { e.on = true; e.note = m.getNoteNumber(); e.velocity = m.getFloatVelocity(); midiScratch.push_back (e); }
-        else if (m.isNoteOff()) { e.on = false; e.note = m.getNoteNumber(); midiScratch.push_back (e); }
-        else if (m.isAllNotesOff() || m.isAllSoundOff()) { e.allOff = true; midiScratch.push_back (e); }
+        if (status == 0x90 && d2 > 0) { e.on = true; e.note = d1; e.velocity = (float) d2 / 127.0f; midiScratch.push_back (e); }
+        else if (status == 0x80 || status == 0x90) { e.on = false; e.note = d1; midiScratch.push_back (e); }
+        else if (status == 0xb0 && (d1 == 120 || d1 == 123)) { e.allOff = true; midiScratch.push_back (e); }
     }
     midi.clear();
 
@@ -210,12 +211,14 @@ void SplinterProcessor::captureLiveInput()
     if (written <= 0) return;
     const double bpm = engine.visual.bpm.load();
     const double spb = currentSampleRate * 60.0 / bpm;
-    const int bars = jlimit (1, 8, (int) getParam (pid::liveBars));
+    int bars = jlimit (1, 8, (int) getParam (pid::liveBars));
     const double endBeat = std::floor (beat / 4.0) * 4.0;
     const int64_t endIdx = written - (int64_t) std::llround ((beat - endBeat) * spb);
-    const int64_t len = (int64_t) std::llround (bars * 4.0 * spb);
     const auto& ring = engine.getLiveRing();
-    if (len < 256 || endIdx - len < 0 || written - (endIdx - len) > ring.capacity() - 1024) return;   // not enough recorded yet
+    int64_t len = (int64_t) std::llround (bars * 4.0 * spb);
+    // at slow tempos, or soon after loading, fewer bars may be available
+    while (bars > 1 && (endIdx - len < 0 || written - (endIdx - len) > ring.capacity() - 1024)) { bars /= 2; len = (int64_t) std::llround (bars * 4.0 * spb); }
+    if (len < 256 || endIdx - len < 0 || written - (endIdx - len) > ring.capacity() - 1024) return;
     splinter::AudioData a; a.sampleRate = currentSampleRate; a.resize (len);
     float peak = 0.0f;
     for (int64_t i = 0; i < len; ++i)
@@ -273,7 +276,7 @@ void SplinterProcessor::loadPresetData (const PresetData& d)
     {
         for (int i = 0; i < kNumSlots; ++i) { b.time[i] = d.bank.time[i]; b.vol[i] = d.bank.vol[i]; b.seq[i] = d.bank.seq[i]; }
     }, allBits & ~slicesBit);
-    presetName = d.name;
+    setPresetName (d.name);
 }
 
 void SplinterProcessor::loadFactoryPreset (int index)
@@ -288,7 +291,7 @@ bool SplinterProcessor::saveUserPreset (const String& name)
 {
     const File dir = presets::userDirectory();
     if (! dir.createDirectory()) return false;
-    presetName = name; factoryIndex = -1;
+    setPresetName (name); factoryIndex = -1;
     const ValueTree t = buildState (true);
     if (auto xml = t.createXml()) return xml->writeTo (dir.getChildFile (File::createLegalFileName (name) + ".splinter"));
     return false;
@@ -301,7 +304,7 @@ bool SplinterProcessor::loadUserPreset (const File& f)
         const ValueTree t = ValueTree::fromXml (*xml);
         if (! t.hasType ("Splinter")) return false;
         restoreState (t, true);
-        presetName = f.getFileNameWithoutExtension(); factoryIndex = -1;
+        setPresetName (f.getFileNameWithoutExtension()); factoryIndex = -1;
         return true;
     }
     return false;
@@ -340,7 +343,7 @@ ValueTree SplinterProcessor::buildState (bool forPreset) const
 {
     ValueTree root ("Splinter");
     root.setProperty ("version", 1, nullptr);
-    root.setProperty ("preset", presetName, nullptr);
+    root.setProperty ("preset", getPresetName(), nullptr);
     root.setProperty ("factoryIndex", factoryIndex, nullptr);
     ValueTree params = const_cast<AudioProcessorValueTreeState&> (apvts).copyState();
     root.appendChild (params, nullptr);
@@ -377,7 +380,7 @@ void SplinterProcessor::restoreState (const ValueTree& root, bool isPreset)
     }
     const ValueTree pats = root.getChildWithName ("Patterns");
     editBank ([&] (PatternBank& b) { b.fromTree (pats, ! isPreset); }, isPreset ? (allBits & ~slicesBit) : allBits);
-    presetName = root.getProperty ("preset", presetName).toString();
+    setPresetName (root.getProperty ("preset", getPresetName()).toString());
     factoryIndex = root.getProperty ("factoryIndex", -1);
     if (! isPreset)
     {

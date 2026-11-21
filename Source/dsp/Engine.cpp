@@ -18,7 +18,7 @@ Engine::Engine()
 void Engine::prepare (double sampleRate, int)
 {
     sr = sampleRate;
-    ring.prepare ((int) (sampleRate * 32.0) + 4 * kSourceGuard);
+    ring.prepare ((int) (sampleRate * 40.0) + 4 * kSourceGuard);     // 8 bars down to 50 BPM
     harm.prepare (sampleRate);
     harmLatency = harm.fftSize();
     limiter.prepare (sampleRate);
@@ -415,7 +415,9 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         // The tiny bias makes every "which side of the grid line is this sample on"
         // decision immune to rounding noise in the host position (it is 2e-5 samples).
         const double T = beat + 1.0e-9;
-        const float xl = inL[n], xr = inR[n];
+        float xl = inL[n], xr = inR[n];
+        if (! (std::fabs (xl) < 1.0e4f)) xl = 0.0f;     // also rejects NaN / Inf, which would poison every filter state
+        if (! (std::fabs (xr) < 1.0e4f)) xr = 0.0f;
         ring.write (xl, xr);
         visIn = std::max (visIn, std::max (std::fabs (xl), std::fabs (xr)));
 

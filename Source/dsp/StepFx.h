@@ -383,7 +383,7 @@ public:
             line[i][(size_t) (w & mask[i])] = v;
             e += std::fabs (v);
         }
-        ++w;
+        w = (w + 1) & 0x3fffffff;
         outL = 0.5f * (o[0] - o[2] + o[4] - o[6]);
         outR = 0.5f * (o[1] - o[3] + o[5] - o[7]);
         energy = e;
