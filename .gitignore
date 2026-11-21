@@ -1,0 +1,9 @@
+build/
+build-*/
+out/
+*.user
+.DS_Store
+.vscode/
+.idea/
+tests/renders/
+tools/pluginval/
