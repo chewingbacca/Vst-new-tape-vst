@@ -28,6 +28,42 @@ juce::String formatValue (const swoon::ParamDef& d, float v)
 
     return juce::String (v, 2);
 }
+/** On/off parameter that always holds exactly 0 or 1.
+
+    juce::AudioParameterBool stores whatever normalised value the host sends (say 0.58). The value-tree state
+    only sees the snapped value, so restoring "on" over a stored 0.58 is treated as no change and the raw value
+    is left behind - hosts and validators then read back something that was never saved. Snapping on the way
+    in keeps the parameter, the state and the host in agreement. */
+class SwitchParameter final : public juce::RangedAudioParameter
+{
+public:
+    SwitchParameter (const juce::ParameterID& pid, const juce::String& paramName, bool defaultOn)
+        : RangedAudioParameter (pid, paramName),
+          value (defaultOn ? 1.0f : 0.0f),
+          defaultValue (defaultOn ? 1.0f : 0.0f)
+    {
+    }
+
+    float getValue() const override { return value.load (std::memory_order_relaxed); }
+    void setValue (float newValue) override { value.store (newValue >= 0.5f ? 1.0f : 0.0f, std::memory_order_relaxed); }
+    float getDefaultValue() const override { return defaultValue; }
+    int getNumSteps() const override { return 2; }
+    bool isDiscrete() const override { return true; }
+    bool isBoolean() const override { return true; }
+    const juce::NormalisableRange<float>& getNormalisableRange() const override { return range; }
+
+    juce::String getText (float v, int) const override { return v >= 0.5f ? "On" : "Off"; }
+    float getValueForText (const juce::String& text) const override
+    {
+        const auto t = text.trim().toLowerCase();
+        return (t == "on" || t == "yes" || t == "true" || t.getFloatValue() >= 0.5f) ? 1.0f : 0.0f;
+    }
+
+private:
+    std::atomic<float> value;
+    const float defaultValue;
+    const juce::NormalisableRange<float> range { 0.0f, 1.0f, 1.0f };
+};
 } // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout SwoonAudioProcessor::createParameterLayout()
@@ -68,7 +104,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout SwoonAudioProcessor::createP
                 layout.add (std::make_unique<juce::AudioParameterInt> (pid, d.name, (int) d.min, (int) d.max, (int) d.def));
                 break;
             case ParamKind::Bool:
-                layout.add (std::make_unique<juce::AudioParameterBool> (pid, d.name, d.def > 0.5f));
+                layout.add (std::make_unique<SwitchParameter> (pid, d.name, d.def > 0.5f));
                 break;
             case ParamKind::Choice:
                 layout.add (std::make_unique<juce::AudioParameterChoice> (

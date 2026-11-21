@@ -123,7 +123,7 @@ std::vector<PresetDef> makeFactoryPresets()
     p.push_back (build ("Soft Focus Morning", "Dream Pop",
         "Twin delays, detuned voices and a plate of haze over a clean amp. Raise Wall for grit.", {
             { P::wall, 0.0f }, { P::wash, 0.5f }, { P::glide, 0.3f }, { P::blur, 0.65f },
-            { P::glideWobble, 4.0f }, { P::glideDrift, 6.0f }, { P::glideDip, 0.0f }, { P::glideSpread, 0.35f },
+            { P::glideWobble, 4.0f }, { P::glideDrift, 6.0f }, { P::glideDip, 0.0f }, { P::glideSpread, 0.25f },
             { P::ampDrive, 0.2f }, { P::ampTreble, 0.55f }, { P::ampCab, Open212 },
             { P::modMode, Ensemble }, { P::modRate, 0.35f }, { P::modDepth, 0.45f }, { P::modMix, 0.3f }, { P::modWidth, 1.0f },
             { P::focTime, 250.0f }, { P::focFeedback, 0.55f }, { P::focDetune, 9.0f }, { P::focHaze, 0.6f }, { P::focTone, 0.6f }, { P::focMix, 0.5f },
@@ -235,7 +235,7 @@ std::vector<PresetDef> makeFactoryPresets()
     p.push_back (build ("Warped Acetate", "Glide",
         "A record cut slightly off-centre and played on a tired motor.", {
             { P::wall, 0.0f }, { P::wash, 0.4f }, { P::glide, 0.75f }, { P::blur, 0.5f }, { P::warmth, 0.65f },
-            { P::glideWobble, 25.0f }, { P::glideRate, 1.1f }, { P::glideDrift, 28.0f }, { P::glideDip, 0.0f }, { P::glideSpread, 0.35f },
+            { P::glideWobble, 25.0f }, { P::glideRate, 1.1f }, { P::glideDrift, 28.0f }, { P::glideDip, 0.0f }, { P::glideSpread, 0.25f },
             { P::ampDrive, 0.4f },
             { P::modMode, Vibrato }, { P::modRate, 5.5f }, { P::modDepth, 0.3f }, { P::modMix, 0.5f },
             { P::focMix, 0.15f },

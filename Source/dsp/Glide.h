@@ -116,8 +116,8 @@ public:
         const float sideL = driftSide[0].tick(), sideR = driftSide[1].tick();
         // Any pitch difference between the sides integrates into a time difference, so even a little spread
         // decorrelates the image quickly. Square-law so the lower half of the knob stays centred.
-        const float spreadNow = spreadS.target * spreadS.target;
-        const float cw = std::sqrt (1.0f - 0.75f * spreadNow), sw = std::sqrt (0.75f * spreadNow);
+        const float sw = 0.87f * spreadS.target * spreadS.target;     // independent share of the drift, per side
+        const float cw = std::sqrt (1.0f - sw * sw);
         driftSmooth[0].target = cw * common + sw * sideL;
         driftSmooth[1].target = cw * common + sw * sideR;
         const float releaseCoeff = 1.0f - std::exp (-1.0f / (std::clamp (p.returnMs, 20.0f, 4000.0f) * 0.001f * 0.45f * fs));
