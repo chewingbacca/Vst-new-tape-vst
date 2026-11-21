@@ -153,7 +153,7 @@ public:
     inline void process (float& l, float& r, float amount)
     {
         if (amount <= 0.0f) { if (! wasIdle) { reset(); wasIdle = true; } return; }
-        wasIdle = false;
+        if (wasIdle) { cutSm = cutoff; for (auto& f : svf) f.set (sr, cutSm, q); wasIdle = false; }
         if ((counter++ & 15) == 0) { cutSm += 0.25f * (cutoff - cutSm); for (auto& f : svf) f.set (sr, cutSm, q); }
         float in[2] = { l, r };
         float out[2];

@@ -80,6 +80,15 @@ struct SlewAR
     inline float process (float x) { y += (x > y ? aUp : aDown) * (x - y); return y; }
 };
 
+// Two cascaded one-poles: follows a control signal with a continuous slope.
+struct Smooth2
+{
+    float y1 = 0.0f, y2 = 0.0f, a = 1.0f;
+    void setTime (double sampleRate, double ms) { a = ms <= 0.0 ? 1.0f : (float) (1.0 - std::exp (-1.0 / (0.0005 * ms * sampleRate))); }
+    void reset (float v) { y1 = y2 = v; }
+    inline float process (float x) { y1 += a * (x - y1); y2 += a * (y1 - y2); return y2; }
+};
+
 // Linear slew limiter: moves at most `maxStep` per sample (exact, finite fades).
 struct SlewLin
 {

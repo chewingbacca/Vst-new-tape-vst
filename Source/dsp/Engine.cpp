@@ -40,7 +40,8 @@ void Engine::prepare (double sampleRate, int)
     for (auto* s : { &mixSm, &widthSm, &gainSm, &volDepthSm, &warpDepthSm, &bypassSm, &delayLevelSm, &reverbLevelSm, &limiterSm })
         s->setRampSamples (ramp);
     bypassSm.setRampSamples (std::max (8, (int) (0.012 * sampleRate)));
-    for (auto& e : laneEnv) e.setTime (sampleRate, 3.0);
+    for (auto& e : laneEnv) e.setTime (sampleRate, 5.0);
+    laneEnv[laneFilter].setTime (sampleRate, 12.0);
     harmEnv.setTime (sampleRate, 8.0);
     loopGain.setTime (sampleRate, 6.0); dryGain.setTime (sampleRate, 6.0); warpGain.setTime (sampleRate, 2.5);
     for (auto& v : voices) v.gain.setTime (sampleRate, 4.0);
@@ -116,7 +117,7 @@ void Engine::updateBlockParams (const EngineParams& p)
     bypassSm.setTarget (p.bypass ? 1.0f : 0.0f);
     delayLevelSm.setTarget (p.delayLevel); reverbLevelSm.setTarget (p.reverbLevel);
     limiterSm.setTarget (p.limiter ? 1.0f : 0.0f);
-    volSlew.setTimes (sr, std::max (0.5f, p.volSmoothMs), std::max (0.5f, p.volSmoothMs));
+    volSlew.setTime (sr, std::max (0.5f, p.volSmoothMs));
 
     if (p.hpFreq != lastHp || p.lpFreq != lastLp || p.filterQ != lastQ)
     {
@@ -228,7 +229,7 @@ double Engine::warpTime (double t, float& gain, const EngineParams& p, bool allo
                 {
                     const double c = 1.0 - u / D;
                     t = r.start + (D / 3.0) * (1.0 - c * c * c);
-                    gain *= (float) std::min (1.0, c * 8.0);
+                    gain *= (float) std::min (1.0, c * 5.0);
                 }
                 else { t = r.start + D / 3.0; gain = 0.0f; }
             }
@@ -426,9 +427,19 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         }
         warpDepthSm.next();
 
+        // ---- clocks. The reader runs kReaderLookahead samples behind the host
+        // (it needs that much future for band-limited reads of live input); the
+        // post stage additionally lags by the harmoniser latency.
+        clockDelay[(size_t) clockW] = T; playDelay[(size_t) clockW] = playingNow ? 1 : 0;
+        const double Td = clockDelay[(size_t) ((clockW - kReaderLookahead) & clockMask)];
+        const int cr = (clockW - postDelay) & clockMask;
+        const double Tp = clockDelay[(size_t) cr];
+        const bool playingP = playDelay[(size_t) cr] != 0;
+        clockW = (clockW + 1) & clockMask;
+
         // ---- time maps
         float wg = 1.0f;
-        const double Tw = warpTime (T, wg, p, ! live);
+        const double Tw = warpTime (Td, wg, p, ! live);
         const float wgs = warpGain.process (wg);
 
         // ---- main voice
@@ -441,11 +452,11 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             if (live)
             {
                 const SourceView v = ring.view();
-                const double x = (double) (ring.written() - 1) - lookBeats - (T - pos) * spbNow;
+                const double x = (double) (ring.written() - 1) - lookBeats - (Td - pos) * spbNow;
                 loopReader.process (v, x, 1.0, fade, l, r);
             }
             else
-                loopReader.process (loopView, pos * spbR - lookBeats, loopRate, fade, l, r);
+                loopReader.process (loopView, pos * spbR, loopRate, fade, l, r);
             sl += l * lg; sr_ += r * lg;
         }
         else if (! loopReader.isSilent()) loopReader.reset();
@@ -464,10 +475,10 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             if (live)
             {
                 const SourceView sv = ring.view();
-                v.reader.process (sv, (double) (ring.written() - 1) - lookBeats - (T - pos) * spbNow, 1.0, fade, l, r);
+                v.reader.process (sv, (double) (ring.written() - 1) - lookBeats - (Td - pos) * spbNow, 1.0, fade, l, r);
             }
             else if (haveLoop)
-                v.reader.process (loopView, pos * spbR - lookBeats, loopRate, fade, l, r);
+                v.reader.process (loopView, pos * spbR, loopRate, fade, l, r);
             else { l = r = 0.0f; }
             sl += l * g; sr_ += r * g;
         }
@@ -481,7 +492,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         {
             const float dg = dryGain.process ((playingNow && p.loopPlay && haveLoop) ? 1.0f : 0.0f);
             float l = 0.0f, r = 0.0f;
-            if (dg > 0.0f) dryReader.process (loopView, T * spbR - lookBeats, loopRate, fade, l, r);
+            if (dg > 0.0f) dryReader.process (loopView, Td * spbR, loopRate, fade, l, r);
             else if (! dryReader.isSilent()) dryReader.reset();
             dl = loopDryDelay[0].process (l * dg, harmLatency);
             dr = loopDryDelay[1].process (r * dg, harmLatency);
@@ -494,13 +505,13 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             int chordVar = 0;
             if (p.harmGate == 1 || held[laneHarmony].down)
             {
-                const LaneRun& r = laneRun (laneHarmony, T, false);
+                const LaneRun& r = laneRun (laneHarmony, Td, false);
                 envTarget = (r.active && harmAmount > 0.0f) ? 1.0f : 0.0f;
                 chordVar = r.active ? r.var : 0;
             }
             else
             {
-                const LaneRun& r = laneRun (laneHarmony, T, false);
+                const LaneRun& r = laneRun (laneHarmony, Td, false);
                 chordVar = r.active ? r.var : 0;
             }
             const float he = harmEnv.process (envTarget);
@@ -538,13 +549,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         float wl = mainDelay[0].process (sl, harmLatency) + hl;
         float wr = mainDelay[1].process (sr_, harmLatency) + hr;
 
-        // ---- post clock (the audio here is postDelay samples old)
-        clockDelay[(size_t) clockW] = T; playDelay[(size_t) clockW] = playingNow ? 1 : 0;
-        const int cr = (clockW - postDelay) & clockMask;
-        const double Tp = clockDelay[(size_t) cr];
-        const bool playingP = playDelay[(size_t) cr] != 0;
-        clockW = (clockW + 1) & clockMask;
-
+        // ---- post stage (the audio here is postDelay samples old)
         if (wantSeqSlot != curSeqSlotPost || wantVolSlot != curVolSlot)
         {
             if (q <= 0.0 || std::floor (Tp / q) != std::floor ((Tp - beatInc) / q) || ! playingP)
@@ -574,7 +579,11 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         const float eDelay = laneEnv[laneDelay].process (rDelay.active ? 1.0f : 0.0f);
         const float eReverb = laneEnv[laneReverb].process (rReverb.active ? 1.0f : 0.0f);
 
-        if ((fxUpdateCounter++ & 15) == 0)
+        const uint32_t activeMask = (rCrush.active ? 1u : 0u) | (rComb.active ? 2u : 0u) | (rRing.active ? 4u : 0u) | (rFilter.active ? 8u : 0u)
+                                  | (rDelay.active ? 16u : 0u) | (rReverb.active ? 32u : 0u);
+        const bool fxEdge = (activeMask & ~lastActiveMask) != 0;
+        lastActiveMask = activeMask;
+        if ((fxUpdateCounter++ & 15) == 0 || fxEdge)
         {
             if (rCrush.active)
             {
@@ -684,7 +693,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         if (live)
             visual.loopPos.store ((float) (((double) (ring.written() - 1) - loopReader.currentPosition()) / spbNow), std::memory_order_relaxed);
         else
-            visual.loopPos.store ((float) floorMod ((loopReader.currentPosition() + lookBeats) / spbR, lb), std::memory_order_relaxed);
+            visual.loopPos.store ((float) floorMod (loopReader.currentPosition() / spbR, lb), std::memory_order_relaxed);
         visual.loopGain.store (loopGain.y, std::memory_order_relaxed);
         visual.playRate.store ((float) (loopReader.currentRate() / (live ? 1.0 : std::max (1.0e-9, loopRate))), std::memory_order_relaxed);
         for (int i = 0; i < kMaxSliceVoices; ++i)
@@ -693,7 +702,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             float pos = -1.0f;
             if (v.active && ! v.releasing)
                 pos = live ? (float) (((double) (ring.written() - 1) - v.reader.currentPosition()) / spbNow)
-                           : (float) floorMod ((v.reader.currentPosition() + lookBeats) / spbR, lb);
+                           : (float) floorMod (v.reader.currentPosition() / spbR, lb);
             visual.voicePos[i].store (pos, std::memory_order_relaxed);
         }
     }

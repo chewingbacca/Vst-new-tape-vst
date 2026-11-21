@@ -157,7 +157,13 @@ public:
             Tap& c = taps[cur];
             const double delta = target - c.x;
             const double err = std::fabs (delta - c.dx);
-            if (err > 6.0 + 1.5 * std::fabs (c.dx))
+            // a jump in position *or* an abrupt change of speed (which would be a
+            // kink in the waveform) is bridged by a crossfade
+            if (c.fresh && std::fabs (delta) <= 2.0 * kSincMaxStretch)
+            {
+                c.fresh = false; c.dx = delta; c.x = target;   // first step tells us the real speed
+            }
+            else if (err > 0.05 * std::max (1.0, std::fabs (c.dx)))
             {
                 c.step = -1.0f / (float) std::max (1, fadeSamples);
                 c.dx = clampv (c.dx, -(double) kSincMaxStretch, (double) kSincMaxStretch);
@@ -194,7 +200,7 @@ private:
     {
         double x = 0.0, dx = 1.0;
         float phase = 0.0f, step = 0.0f;
-        bool active = false;
+        bool active = false, fresh = false;
     };
     Tap taps[kMaxTaps];
     int cur = -1;
@@ -212,7 +218,7 @@ private:
         Tap& t = taps[slot];
         const bool wasSilent = ! t.active;
         t.active = true;
-        t.x = target; t.dx = rate;
+        t.x = target; t.dx = rate; t.fresh = true;
         t.phase = wasSilent ? 0.0f : 0.0f;
         t.step = 1.0f / (float) std::max (1, fadeSamples);
         cur = slot;

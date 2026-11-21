@@ -291,4 +291,223 @@ TEST_CASE (transport_stop_and_start_fade_cleanly)
     CHECK_MSG (c.worstRatio < 6.0, "click ratio %.2f at %zu", c.worstRatio, c.position);
 }
 
+
+// ================================================================ glitch stages
+// Helper: a loop whose sample value encodes its own position (a ramp), so the
+// output tells us exactly which source position is being played.
+static void rampLoop (Rig& rig, double beats)
+{
+    rig.makeLoop (beats, [=] (int64_t, double beat, float& l, float& r) { l = r = (float) (beat / beats); });
+}
+// source beat heard at output sample i (ramp loop), given loop length
+static double heardBeat (const Rig& rig, int64_t i, double beats) { return (double) rig.outL[(size_t) i] * beats; }
+static int64_t sampleAtBeat (const Rig& rig, double beat) { return (int64_t) std::llround (beat * rig.spb()) + rig.engine.latencySamples(); }
+
+TEST_CASE (stutter_repeats_the_first_division_on_the_grid)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false; rig.params.declickMs = 1.0f;
+    rampLoop (rig, 4.0);
+    SeqPattern p = emptyPattern();
+    for (int s = 8; s < 12; ++s) setStep (p, laneStutter, s, 4);     // beat 2..3, 1/16 repeats
+    rig.engine.setSeqPattern (0, p);
+    rig.render (48000 * 2);
+    // before the run: real time
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 1.5), 4.0) - 1.5) < 0.002);
+    // inside the run each 1/16 replays beat 2.0 .. 2.25
+    for (int k = 0; k < 4; ++k)
+    {
+        const double t = 2.0 + k * 0.25 + 0.125;
+        CHECK_MSG (std::fabs (heardBeat (rig, sampleAtBeat (rig, t), 4.0) - 2.125) < 0.002, "repeat %d heard %.4f", k, heardBeat (rig, sampleAtBeat (rig, t), 4.0));
+    }
+    // after the run: back in real time
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 3.5), 4.0) - 3.5) < 0.002);
+    // the repeat boundary lands within one crossfade of the grid
+    const int64_t b = sampleAtBeat (rig, 2.25);
+    CHECK (heardBeat (rig, b - 60, 4.0) > 2.2);
+    CHECK (heardBeat (rig, b + 60, 4.0) < 2.05);
+}
+
+TEST_CASE (reverse_plays_the_run_backwards)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false;
+    rampLoop (rig, 4.0);
+    SeqPattern p = emptyPattern();
+    setStep (p, laneReverse, 4); setStep (p, laneReverse, 5);         // beat 1.0 .. 1.5
+    rig.engine.setSeqPattern (0, p);
+    rig.render (48000 * 2);
+    CHECK_MSG (std::fabs (heardBeat (rig, sampleAtBeat (rig, 1.1), 4.0) - 1.4) < 0.003, "heard %.4f", heardBeat (rig, sampleAtBeat (rig, 1.1), 4.0));
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 1.4), 4.0) - 1.1) < 0.003);
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 1.75), 4.0) - 1.75) < 0.003);
+}
+
+TEST_CASE (tape_stop_slows_to_silence_then_recovers)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false; rig.params.tapeTime = 1.0f;
+    rig.sineLoop (4.0, 440.0);
+    SeqPattern p = emptyPattern();
+    for (int s = 12; s < 16; ++s) setStep (p, laneTapeStop, s);       // last beat of the bar
+    rig.engine.setSeqPattern (0, p);
+    rig.render (48000 * 3);
+    const double f0 = dominantFrequency (rig.outL, 48000.0, (size_t) sampleAtBeat (rig, 2.0), 4096);
+    const double f1 = dominantFrequency (rig.outL, 48000.0, (size_t) sampleAtBeat (rig, 3.25), 2048, 30.0, 2000.0);
+    const double f2 = dominantFrequency (rig.outL, 48000.0, (size_t) sampleAtBeat (rig, 3.6), 2048, 20.0, 2000.0);
+    CHECK_MSG (std::fabs (centsBetween (f0, 440.0)) < 5.0, "f0 %.2f", f0);
+    CHECK_MSG (f1 < 0.75 * f0 && f2 < f1, "f1 %.1f f2 %.1f", f1, f2);
+    CHECK (rms (rig.outL, (size_t) sampleAtBeat (rig, 3.985), (size_t) sampleAtBeat (rig, 3.999)) < 0.06);
+    CHECK (rms (rig.outL, (size_t) sampleAtBeat (rig, 4.1), (size_t) sampleAtBeat (rig, 4.4)) > 0.2);
+    const ClickResult c = detectClicks (rig.outL, 48000.0, 6000);
+    CHECK_MSG (c.worstRatio < 6.0, "click ratio %.2f at %zu", c.worstRatio, c.position);
+}
+
+TEST_CASE (chop_plays_the_chosen_slice)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false;
+    rampLoop (rig, 4.0);
+    SeqPattern p = emptyPattern();
+    setStep (p, laneChop, 2, 9);      // step 2 plays slice 8 (beat 2.0)
+    setStep (p, laneChop, 3, 9);      // tied: slice keeps running
+    setStep (p, laneChop, 8, 1);      // step 8 plays slice 0
+    rig.engine.setSeqPattern (0, p);
+    rig.render (48000 * 2);
+    CHECK_MSG (std::fabs (heardBeat (rig, sampleAtBeat (rig, 0.6), 4.0) - 2.1) < 0.003, "heard %.4f", heardBeat (rig, sampleAtBeat (rig, 0.6), 4.0));
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 0.9), 4.0) - 2.4) < 0.003);
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 2.1), 4.0) - 0.1) < 0.003);
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 1.5), 4.0) - 1.5) < 0.003);
+    // Chop macro at zero disables rearrangement
+    Rig off (48000.0, 120.0); off.params.limiter = false; off.params.chop = 0.0f;
+    rampLoop (off, 4.0); off.engine.setSeqPattern (0, p); off.render (48000);
+    CHECK (std::fabs (heardBeat (off, sampleAtBeat (off, 0.6), 4.0) - 0.6) < 0.003);
+}
+
+TEST_CASE (time_curve_half_speed_drops_an_octave_and_stays_on_grid)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false; rig.params.warp = 0.5f;   // 0.5 = curve exactly as drawn
+    rig.sineLoop (8.0, 440.0);
+    Curve c; c.clear(); c.lengthBeats = 4.0f; c.rangeBeats = 4.0f;
+    c.add (0.0f, 0.0f); c.add (1.0f, 0.5f);               // falls 2 beats behind over 4 beats = half speed
+    rig.engine.setTimeCurve (0, c);
+    rig.render (48000 * 4);
+    const double f = dominantFrequency (rig.outL, 48000.0, (size_t) sampleAtBeat (rig, 5.0), 8192);
+    CHECK_MSG (std::fabs (centsBetween (f, 220.0)) < 5.0, "half speed freq %.3f", f);
+    const ClickResult ck = detectClicks (rig.outL, 48000.0, 6000);
+    CHECK_MSG (ck.worstRatio < 6.0, "click ratio %.2f at %zu", ck.worstRatio, ck.position);
+
+    // position check with a ramp: at bar start we are back in real time
+    Rig r2 (48000.0, 120.0); r2.params.limiter = false; rampLoop (r2, 8.0);
+    r2.engine.setTimeCurve (0, c); r2.render (48000 * 4);
+    CHECK (std::fabs (heardBeat (r2, sampleAtBeat (r2, 4.02), 8.0) - 4.01) < 0.01);
+    CHECK_MSG (std::fabs (heardBeat (r2, sampleAtBeat (r2, 6.0), 8.0) - 5.0) < 0.01, "heard %.4f", heardBeat (r2, sampleAtBeat (r2, 6.0), 8.0));
+    // Warp macro at 0 bypasses the curve
+    Rig r3 (48000.0, 120.0); r3.params.limiter = false; r3.params.warp = 0.0f; rampLoop (r3, 8.0);
+    r3.engine.setTimeCurve (0, c); r3.render (48000 * 4);
+    CHECK (std::fabs (heardBeat (r3, sampleAtBeat (r3, 6.0), 8.0) - 6.0) < 0.003);
+}
+
+TEST_CASE (volume_curve_gates_without_clicks)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false;
+    rig.sineLoop (4.0, 300.0);
+    Curve c; c.clear(); c.lengthBeats = 4.0f;
+    for (int i = 0; i < 16; ++i) { c.add (i / 16.0f, 1.0f, 0.0f, true); c.add ((i + 0.5f) / 16.0f, 0.0f, 0.0f, true); }   // hard 1/32 gate
+    rig.engine.setVolCurve (0, c);
+    rig.render (48000 * 2);
+    const int64_t on = sampleAtBeat (rig, 1.0 + 0.0625), off = sampleAtBeat (rig, 1.125 + 0.0625);
+    CHECK (rms (rig.outL, (size_t) (on - 300), (size_t) (on + 300)) > 0.25);
+    CHECK (rms (rig.outL, (size_t) (off - 300), (size_t) (off + 300)) < 0.005);
+    const ClickResult ck = detectClicks (rig.outL, 48000.0, 6000);
+    CHECK_MSG (ck.worstRatio < 6.0, "click ratio %.2f at %zu", ck.worstRatio, ck.position);
+}
+
+TEST_CASE (slot_switch_is_quantised)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false; rig.params.quantize = 4;   // bar
+    rampLoop (rig, 8.0);
+    Curve c; c.clear(); c.lengthBeats = 4.0f; c.rangeBeats = 4.0f; c.add (0.0f, 0.25f); c.add (1.0f, 0.25f);   // constant 1 beat behind
+    rig.engine.setTimeCurve (3, c);
+    rig.render ((int64_t) (rig.spb() * 1.5));
+    rig.params.timeSlot = 3;                                // asked for mid-bar
+    rig.render (48000 * 3);
+    CHECK (std::fabs (heardBeat (rig, sampleAtBeat (rig, 3.5), 8.0) - 3.5) < 0.003);   // not yet
+    CHECK_MSG (std::fabs (heardBeat (rig, sampleAtBeat (rig, 4.5), 8.0) - 3.5) < 0.003, "heard %.4f", heardBeat (rig, sampleAtBeat (rig, 4.5), 8.0));
+}
+
+TEST_CASE (midi_slices_and_pattern_keys)
+{
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false; rig.params.loopPlay = false;
+    rampLoop (rig, 4.0);
+    rig.midi.push_back ({ 24000, true, 36 + 8, 1.0f, false });      // slice 8 = beat 2.0
+    rig.midi.push_back ({ 36000, false, 36 + 8, 0.0f, false });
+    rig.render (60000);
+    const int lat = rig.engine.latencySamples();
+    CHECK (peakAbs (rig.outL, 0, 24000) < 1.0e-5f);
+    CHECK_MSG (std::fabs (rig.outL[(size_t) (24000 + lat + 6000)] * 4.0 - (2.0 + 6000.0 / rig.spb())) < 0.01, "heard %.4f", rig.outL[(size_t) (24000 + lat + 6000)] * 4.0);
+    CHECK (peakAbs (rig.outL, (size_t) (36000 + lat + 2000), 60000) < 1.0e-5f);
+
+    // patterns mode: note 37 selects time slot 1, note 73 holds a stutter
+    Rig r2 (48000.0, 120.0); r2.params.limiter = false; r2.params.midiMode = 1; r2.params.quantize = 0;
+    rampLoop (r2, 4.0);
+    r2.midi.push_back ({ 24000, true, 73, 1.0f, false });
+    r2.midi.push_back ({ 48000, false, 73, 0.0f, false });
+    r2.render (72000);
+    const double held = 24000.0 / r2.spb();
+    const double h1 = r2.outL[(size_t) (24000 + lat + 3000)] * 4.0, h2 = r2.outL[(size_t) (24000 + lat + 3000 + 6000)] * 4.0;
+    CHECK_MSG (std::fabs (h1 - (held + 3000.0 / r2.spb())) < 0.01 && std::fabs (h1 - h2) < 0.01, "h1 %.4f h2 %.4f", h1, h2);
+    CHECK (std::fabs (r2.outL[(size_t) (60000 + lat)] * 4.0 - 60000.0 / r2.spb()) < 0.01);
+}
+
+// ================================================================ effects: sanity for every lane
+TEST_CASE (every_lane_is_finite_bounded_and_clickless_on_a_tone)
+{
+    for (int lane = 0; lane < kNumLanes; ++lane)
+    {
+        Rig rig (48000.0, 120.0);
+        rig.sineLoop (4.0, 261.6, 0.4f);
+        rig.params.harmony = lane == laneHarmony ? 0.8f : 0.0f; rig.params.harmGate = 1;
+        SeqPattern p = emptyPattern();
+        setStep (p, lane, 2); setStep (p, lane, 3); setStep (p, lane, 6); setStep (p, lane, 9, 2); setStep (p, lane, 12, 3); setStep (p, lane, 13, 3);
+        rig.engine.setSeqPattern (0, p);
+        rig.render (48000 * 6);
+        CHECK_MSG (! hasNonFinite (rig.outL) && ! hasNonFinite (rig.outR), "lane %s non finite", laneName (lane));
+        CHECK_MSG (peakAbs (rig.outL) <= 0.9661f && peakAbs (rig.outR) <= 0.9661f, "lane %s peak %g", laneName (lane), peakAbs (rig.outL));
+        CHECK_MSG (rms (rig.outL, 48000) > 0.02, "lane %s silent", laneName (lane));
+        // crush / ring / comb / freeze / reverb are *meant* to add rough or dense
+        // content, so the click metric only applies to the clean lanes
+        if (lane != laneCrush && lane != laneRing && lane != laneComb && lane != laneFreeze && lane != laneReverb && lane != laneDelay)
+        {
+            const ClickResult c = detectClicks (rig.outL, 48000.0, 6000);
+            CHECK_MSG (c.worstRatio < 8.0, "lane %s click ratio %.2f at %zu (beat %.3f)", laneName (lane), c.worstRatio, c.position, (c.position - rig.engine.latencySamples()) / rig.spb());
+        }
+    }
+}
+
+TEST_CASE (limiter_never_exceeds_ceiling)
+{
+    Limiter lim; lim.prepare (48000.0);
+    Rng rng (8); float worst = 0.0f;
+    for (int i = 0; i < 200000; ++i)
+    {
+        float l = rng.bipolar() * ((i / 5000) % 2 ? 6.0f : 0.5f), r = (i % 9000 == 0) ? 20.0f : l * 0.3f;
+        lim.process (l, r);
+        worst = std::max (worst, std::max (std::fabs (l), std::fabs (r)));
+    }
+    CHECK_MSG (worst <= 0.9661f, "worst %g", worst);
+    // transparent below the ceiling, apart from its delay
+    lim.reset(); double err = 0.0; std::vector<float> in;
+    for (int i = 0; i < 20000; ++i)
+    {
+        const float x = 0.5f * (float) std::sin (0.05 * i); in.push_back (x);
+        float l = x, r = x; lim.process (l, r);
+        if (i >= lim.latency() + 200) err = std::max (err, (double) std::fabs (l - in[(size_t) (i - lim.latency())]));
+    }
+    CHECK_MSG (err < 1.0e-6, "err %g", err);
+}
+
 int main (int argc, char** argv) { return testutil::runAll (argc > 1 ? argv[1] : nullptr); }

@@ -208,9 +208,10 @@ private:
     Fader laneEnv[kNumLanes];
     bool freezeWasOn = false, delayTimeSet = false, reverbSet = false, firstBlock = true;
     int fxUpdateCounter = 0;
+    uint32_t lastActiveMask = 0;
 
     // volume + output
-    SlewAR volSlew;
+    Smooth2 volSlew;
     Svf outHp[2], outLp[2];
     TiltEq tilt;
     Limiter limiter;
