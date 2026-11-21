@@ -90,15 +90,21 @@ if(SWOON_BUILD_PLUGIN)
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_MODAL_LOOPS_PERMITTED=0)
+        JUCE_MODAL_LOOPS_PERMITTED=1)
 
     target_link_libraries(Swoon
-        PRIVATE
+        PUBLIC
             swoon_dsp
             juce::juce_audio_utils
-        PUBLIC
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
+
+    # Headless editor renderer used for visual review of the UI (not shipped).
+    if(SWOON_BUILD_TESTS)
+        juce_add_console_app(swoon_ui_snapshot PRODUCT_NAME "swoon_ui_snapshot")
+        target_sources(swoon_ui_snapshot PRIVATE Tests/ui_snapshot.cpp)
+        target_link_libraries(swoon_ui_snapshot PRIVATE Swoon)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
