@@ -22,7 +22,7 @@ jobs:
             os: windows-latest
             artifact: Swoon-Windows
           - name: macOS
-            os: macos-14
+            os: macos-latest
             artifact: Swoon-macOS
     steps:
       - uses: actions/checkout@v4
