@@ -1,0 +1,20 @@
+Splinter - macOS install (universal: Apple silicon + Intel, macOS 11 or later)
+
+1. Copy  Splinter.vst3       to  ~/Library/Audio/Plug-Ins/VST3/
+   Copy  Splinter.component  to  ~/Library/Audio/Plug-Ins/Components/   (Audio Unit, for Logic / GarageBand)
+   Splinter.app is the standalone version; put it in Applications if you like.
+   (In Finder: Go > Go to Folder..., paste the path.)
+
+2. The build is not notarised by Apple, so macOS quarantines it after download.
+   Remove the quarantine flag once, in Terminal:
+
+       xattr -cr ~/Library/Audio/Plug-Ins/VST3/Splinter.vst3
+       xattr -cr ~/Library/Audio/Plug-Ins/Components/Splinter.component
+       xattr -cr /Applications/Splinter.app
+
+   Without this the DAW will skip the plugin or say it "cannot be opened".
+
+3. Rescan plugins in your DAW. Splinter is an effect that also accepts MIDI
+   (in Logic: an Audio Unit "MIDI-controlled Effect", inserted on an instrument track).
+
+User presets are stored in ~/Library/Splinter/Presets.

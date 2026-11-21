@@ -123,10 +123,10 @@ inline double dominantFrequency (const std::vector<float>& v, double sampleRate,
     auto power = [&] (double f)
     {
         double re = 0.0, im = 0.0;
-        const double w = 2.0 * M_PI * f / sampleRate;
+        const double w = 6.283185307179586 * f / sampleRate;
         for (size_t i = 0; i < count; ++i)
         {
-            const double win = 0.5 - 0.5 * std::cos (2.0 * M_PI * (double) i / (double) count);
+            const double win = 0.5 - 0.5 * std::cos (6.283185307179586 * (double) i / (double) count);
             re += win * v[from + i] * std::cos (w * (double) i); im -= win * v[from + i] * std::sin (w * (double) i);
         }
         return re * re + im * im;

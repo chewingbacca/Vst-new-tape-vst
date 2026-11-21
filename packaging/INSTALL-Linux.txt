@@ -1,0 +1,7 @@
+Splinter - Linux install (built on Ubuntu 24.04, x86_64)
+
+1. Copy the folder "Splinter.vst3" to ~/.vst3/
+2. Rescan plugins in your DAW.
+3. "Splinter" is the standalone version (ALSA / JACK).
+
+User presets are stored in ~/.config/Splinter/Presets.

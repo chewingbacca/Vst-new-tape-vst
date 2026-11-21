@@ -1,0 +1,12 @@
+Splinter - Windows install
+
+1. Copy the folder "Splinter.vst3" to
+       C:\Program Files\Common Files\VST3\
+   (create the VST3 folder if it does not exist; Windows will ask for administrator rights).
+2. Rescan plugins in your DAW. Splinter appears as an effect (Splinter Audio > Splinter).
+   To play it from a keyboard, route a MIDI track to it.
+3. Splinter.exe is the standalone version; it runs from anywhere.
+
+The build is not code-signed. If SmartScreen blocks Splinter.exe, choose
+"More info" > "Run anyway".
+User presets are stored in %APPDATA%\Splinter\Presets.

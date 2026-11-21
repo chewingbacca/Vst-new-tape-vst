@@ -1,0 +1,129 @@
+name: Build
+
+# Builds Splinter for Windows, macOS (universal) and Linux, runs the tests and
+# uploads a ready-to-install zip per platform.
+#   - every push to main or a claude/** branch: zips appear under the run's "Artifacts"
+#   - pushing a tag like v1.0.0 (or running manually with "release" ticked):
+#     the zips are also attached to a GitHub Release
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a GitHub Release with the builds (tag name, e.g. v1.0.0; leave empty for none)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, zip: Splinter-Windows.zip }
+          - { name: macOS,   os: macos-14,       zip: Splinter-macOS.zip }
+          - { name: Linux,   os: ubuntu-24.04,   zip: Splinter-Linux.zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config xvfb libasound2-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libxi-dev libxrender-dev \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: pluginval (strictness 10)
+        if: runner.os != 'Windows'
+        run: scripts/run_pluginval.sh 10
+
+      - name: pluginval (strictness 10, Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          $p = Start-Process -FilePath "pluginval\pluginval.exe" -ArgumentList '--strictness-level','10','--validate-in-process','--timeout-ms','600000','--validate',"$pwd\build\Splinter_artefacts\Release\VST3\Splinter.vst3" -NoNewWindow -Wait -PassThru
+          exit $p.ExitCode
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          A=build/Splinter_artefacts/Release
+          mkdir -p dist/Splinter
+          cp packaging/INSTALL-${{ matrix.name }}.txt dist/Splinter/INSTALL.txt
+          cp README.md dist/Splinter/
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            cp -R "$A/VST3/Splinter.vst3" "$A/AU/Splinter.component" "$A/Standalone/Splinter.app" dist/Splinter/
+            # ad-hoc signature so the bundles load on Apple silicon (not notarised)
+            for b in Splinter.vst3 Splinter.component Splinter.app; do codesign --force --deep -s - "dist/Splinter/$b"; done
+            (cd dist && ditto -c -k --keepParent Splinter "../${{ matrix.zip }}")
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp -R "$A/VST3/Splinter.vst3" dist/Splinter/
+            cp "$A/Standalone/Splinter.exe" dist/Splinter/
+            (cd dist && 7z a -tzip "../${{ matrix.zip }}" Splinter > /dev/null)
+          else
+            cp -R "$A/VST3/Splinter.vst3" dist/Splinter/
+            cp "$A/Standalone/Splinter" dist/Splinter/
+            (cd dist && zip -qry "../${{ matrix.zip }}" Splinter)
+          fi
+          ls -la "${{ matrix.zip }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: ${{ matrix.zip }}
+          if-no-files-found: error
+
+      - name: Keep the render report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-report-${{ matrix.name }}
+          path: build/renders/report.txt
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Splinter-*.zip
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release }}
+        run: |
+          gh release create "$TAG" Splinter-Windows.zip Splinter-macOS.zip Splinter-Linux.zip \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Splinter $TAG" \
+            --notes "Unsigned builds. See INSTALL.txt inside each zip (macOS needs one extra step to get past Gatekeeper)."
