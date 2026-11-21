@@ -40,7 +40,7 @@ namespace swoon
     X(fuzzSustain, "fuzzSustain", "Fuzz Sustain",    Fuzz,    Float, 0.f, 1.f, 0.6f, 0.f, "%", "") \
     X(fuzzTone,    "fuzzTone",    "Fuzz Tone",       Fuzz,    Float, 0.f, 1.f, 0.5f, 0.f, "%", "") \
     X(fuzzGate,    "fuzzGate",    "Fuzz Gate",       Fuzz,    Float, 0.f, 1.f, 0.15f,0.f, "%", "") \
-    X(fuzzStack,   "fuzzStack",   "Fuzz Stack",      Fuzz,    Float, 0.f, 1.f, 0.3f, 0.f, "%", "") \
+    X(fuzzStack,   "fuzzStack",   "Fuzz Stack",      Fuzz,    Float, 0.f, 1.f, 0.25f, 0.f, "%", "") \
     X(fuzzLevel,   "fuzzLevel",   "Fuzz Level",      Fuzz,    Float, -24.f, 12.f, 0.f, 0.f, "dB", "") \
     X(fuzzMix,     "fuzzMix",     "Fuzz Mix",        Fuzz,    Float, 0.f, 1.f, 1.f,  0.f, "%", "") \
     /* ---- glide ------------------------------------------------------------------------ */ \
@@ -50,7 +50,7 @@ namespace swoon
     X(glideDrift,  "glideDrift",  "Glide Drift",     Glide,   Float, 0.f, 60.f, 12.f, 0.f, "ct", "") \
     X(glideDip,    "glideDip",    "Glide Dip",       Glide,   Float, 0.f, 200.f, 30.f, 60.f, "ct", "") \
     X(glideReturn, "glideReturn", "Glide Return",    Glide,   Float, 40.f, 2500.f, 350.f, 400.f, "ms", "") \
-    X(glideSpread, "glideSpread", "Glide Spread",    Glide,   Float, 0.f, 1.f, 0.35f, 0.f, "%", "") \
+    X(glideSpread, "glideSpread", "Glide Spread",    Glide,   Float, 0.f, 1.f, 0.3f, 0.f, "%", "") \
     X(glideMix,    "glideMix",    "Glide Mix",       Glide,   Float, 0.f, 1.f, 1.f,  0.f, "%", "") \
     /* ---- reverse ---------------------------------------------------------------------- */ \
     X(revOn,       "revOn",       "Reverse On",      Reverse, Bool,  0.f, 1.f, 0.f,  0.f, "",  "") \

@@ -138,6 +138,8 @@ Stereo makeSignal (const Options& o)
     return s;
 }
 
+float gMaxLimiterDb = 0.0f;
+
 void processAll (Engine& engine, Stereo& s, ParamValues pv, int block, const Options* o = nullptr)
 {
     size_t nextEvent = 0;
@@ -171,6 +173,7 @@ void processAll (Engine& engine, Stereo& s, ParamValues pv, int block, const Opt
 
         const int n = static_cast<int> (std::min (static_cast<size_t> (block), s.size() - pos));
         engine.process (s.l.data() + pos, s.r.data() + pos, n, pv);
+        gMaxLimiterDb = std::max (gMaxLimiterDb, engine.getMeters().limiterReductionDb);
     }
 }
 
@@ -202,10 +205,11 @@ int cmdRender (const Options& o)
     const double duration = static_cast<double> (s.size()) / o.sr;
     std::printf ("{\"out\":\"%s\",\"preset\":\"%s\",\"signal\":\"%s\",\"sr\":%.0f,\"block\":%d,\"latency\":%d,"
                  "\"inPeakDb\":%.2f,\"inRmsDb\":%.2f,\"peakDb\":%.2f,\"rmsDb\":%.2f,\"dc\":%.6f,\"tailRmsDb\":%.1f,"
-                 "\"maxStep\":%.4f,\"corr\":%.3f,\"bad\":%ld,\"overs\":%ld,\"cpuPct\":%.2f}\n",
+                 "\"maxStep\":%.4f,\"corr\":%.3f,\"bad\":%ld,\"overs\":%ld,\"limiterDb\":%.2f,\"cpuPct\":%.2f}\n",
                  o.out.c_str(), presetName.c_str(), o.signal.c_str(), o.sr, o.block, engine.getLatencySamples(),
                  testsig::toDb (inM.peak), testsig::toDb (inM.rms), testsig::toDb (m.peak), testsig::toDb (m.rms), m.dc,
-                 testsig::toDb (m.tailRms), m.maxStep, m.corr, m.badSamples, m.overs, 100.0 * elapsed / duration);
+                 testsig::toDb (m.tailRms), m.maxStep, m.corr, m.badSamples, m.overs, static_cast<double> (gMaxLimiterDb),
+                 100.0 * elapsed / duration);
     return m.badSamples == 0 ? 0 : 2;
 }
 

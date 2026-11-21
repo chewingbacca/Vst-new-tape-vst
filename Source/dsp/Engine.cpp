@@ -3,6 +3,7 @@
 #include "AmpTape.h"
 #include "Fuzz.h"
 #include "Glide.h"
+#include "Macros.h"
 #include "Modulation.h"
 #include "Output.h"
 #include "Reverse.h"
@@ -12,21 +13,6 @@
 
 namespace swoon
 {
-
-namespace
-{
-/** Macro "amount" law: 0 -> nothing, 0.5 -> the module's own value, 1 -> pushed most of the way to full. */
-float macroAmount (float macro, float base) noexcept
-{
-    macro = clamp01 (macro);
-    if (macro <= 0.5f)
-    {
-        const float t = macro * 2.0f;
-        return base * t * (2.0f - t);          // eases into the module value
-    }
-    return base + (1.0f - base) * (macro * 2.0f - 1.0f) * 0.7f;
-}
-} // namespace
 
 struct Engine::Impl
 {
@@ -120,12 +106,12 @@ struct Engine::Impl
                 fp.on = pv.on (P::fuzzOn);
                 fp.type = pv.choice (P::fuzzType);
                 fp.voice = pv.choice (P::fuzzVoice);
-                fp.sustain = pv[P::fuzzSustain] + (wall - 0.5f) * 0.5f;
-                fp.tone = pv[P::fuzzTone] - (pv[P::warmth] - 0.5f) * 0.35f;
+                fp.sustain = pv[P::fuzzSustain] + macro::sustainOffset (wall);
+                fp.tone = pv[P::fuzzTone] + macro::fuzzToneOffset (pv[P::warmth]);
                 fp.gate = pv[P::fuzzGate];
-                fp.stack = pv[P::fuzzStack] + (wall - 0.5f) * 0.6f;
+                fp.stack = pv[P::fuzzStack] + macro::stackOffset (wall);
                 fp.levelDb = pv[P::fuzzLevel];
-                fp.mix = macroAmount (wall, pv[P::fuzzMix]);
+                fp.mix = macro::amount (wall, pv[P::fuzzMix]);
                 fuzz.process (l, r, n, fp);
                 break;
             }
@@ -133,9 +119,9 @@ struct Engine::Impl
             {
                 Amp::Params ap;
                 ap.on = pv.on (P::ampOn);
-                ap.drive = pv[P::ampDrive] + std::max (0.0f, pv[P::wall] - 0.5f) * 0.3f;
+                ap.drive = pv[P::ampDrive] + macro::ampDriveOffset (pv[P::wall]);
                 ap.bass = pv[P::ampBass];
-                ap.treble = pv[P::ampTreble] - (pv[P::warmth] - 0.5f) * 0.25f;
+                ap.treble = pv[P::ampTreble] + macro::ampTrebleOffset (pv[P::warmth]);
                 ap.cab = pv.choice (P::ampCab);
                 ap.levelDb = pv[P::ampLevel];
                 ap.mix = pv[P::ampMix];
@@ -149,10 +135,10 @@ struct Engine::Impl
                 mp.on = pv.on (P::modOn);
                 mp.mode = pv.choice (P::modMode);
                 mp.rate = pv[P::modRate];
-                mp.depth = pv[P::modDepth] * (0.7f + 0.6f * blur);
+                mp.depth = pv[P::modDepth] * macro::modDepthMul (blur);
                 mp.color = pv[P::modColor];
                 mp.width = pv[P::modWidth];
-                mp.mix = macroAmount (blur, pv[P::modMix]);
+                mp.mix = macro::amount (blur, pv[P::modMix]);
                 mod.process (l, r, n, mp);
                 break;
             }
@@ -160,7 +146,7 @@ struct Engine::Impl
             {
                 Glide::Params gp;
                 const float g = pv[P::glide];
-                const float amount = 2.0f * g;               // 0 .. 2x the module's depths
+                const float amount = macro::glideDepthMul (g);   // 0 .. 2x the module's depths
                 gp.on = pv.on (P::glideOn);
                 gp.wobbleCents = pv[P::glideWobble] * amount;
                 gp.rateHz = pv[P::glideRate];
@@ -168,7 +154,7 @@ struct Engine::Impl
                 gp.dipCents = pv[P::glideDip] * amount;
                 gp.returnMs = pv[P::glideReturn];
                 gp.spread = pv[P::glideSpread];
-                gp.mix = pv[P::glideMix] * clamp01 (g * 8.0f);   // macro at zero takes the module out entirely
+                gp.mix = pv[P::glideMix] * macro::glideMixMul (g);   // macro at zero takes the module out entirely
                 glide.process (l, r, n, gp);
                 break;
             }
@@ -179,10 +165,10 @@ struct Engine::Impl
                 sp.on = pv.on (P::focOn);
                 sp.timeMs = pv[P::focTime];
                 sp.feedback = pv[P::focFeedback];
-                sp.detuneCents = pv[P::focDetune] * (0.6f + 0.8f * blur);
-                sp.haze = pv[P::focHaze] + (blur - 0.5f) * 0.4f;
-                sp.tone = pv[P::focTone] - (pv[P::warmth] - 0.5f) * 0.3f;
-                sp.mix = macroAmount (blur, pv[P::focMix]);
+                sp.detuneCents = pv[P::focDetune] * macro::detuneMul (blur);
+                sp.haze = pv[P::focHaze] + macro::hazeOffset (blur);
+                sp.tone = pv[P::focTone] + macro::toneOffset (pv[P::warmth]);
+                sp.mix = macro::amount (blur, pv[P::focMix]);
                 focus.process (l, r, n, sp);
                 break;
             }
@@ -194,7 +180,7 @@ struct Engine::Impl
                 rp.timeMs = pv[P::revTime];
                 rp.feedback = pv[P::revFeedback];
                 rp.smear = pv[P::revSmear];
-                rp.tone = pv[P::revTone] - (pv[P::warmth] - 0.5f) * 0.3f;
+                rp.tone = pv[P::revTone] + macro::toneOffset (pv[P::warmth]);
                 rp.mix = pv[P::revMix];
                 reverse.process (l, r, n, rp);
                 break;
@@ -204,17 +190,17 @@ struct Engine::Impl
                 Wash::Params wp;
                 const float w = pv[P::wash];
                 wp.on = pv.on (P::washOn);
-                wp.decay = pv[P::washDecay] * std::pow (2.0f, (w - 0.5f) * 3.0f);
-                wp.size = pv[P::washSize] + (w - 0.5f) * 0.4f;
+                wp.decay = pv[P::washDecay] * macro::decayMul (w);
+                wp.size = pv[P::washSize] + macro::sizeOffset (w);
                 wp.preDelayMs = pv[P::washPre];
-                wp.highCutHz = pv[P::washDamp] * std::pow (2.0f, -(pv[P::warmth] - 0.5f) * 2.4f);
+                wp.highCutHz = pv[P::washDamp] * macro::washDampMul (pv[P::warmth]);
                 wp.lowCutHz = pv[P::washLow];
                 wp.mod = pv[P::washMod];
                 wp.shimmer = pv[P::washShimmer];
                 wp.shimmerMode = pv.choice (P::washShimMode);
                 wp.duck = pv[P::washDuck];
                 wp.freeze = pv.on (P::washFreeze);
-                wp.mix = macroAmount (w, pv[P::washMix]);
+                wp.mix = macro::amount (w, pv[P::washMix]);
                 wash.process (l, r, n, wp);
                 break;
             }
@@ -323,18 +309,18 @@ struct Engine::Impl
         const float warmth = pv[P::warmth];
         Tape::Params tp;
         tp.on = pv.on (P::tapeOn);
-        tp.drive = pv[P::tapeDrive] + (warmth - 0.5f) * 0.4f;
+        tp.drive = pv[P::tapeDrive] + macro::tapeDriveOffset (warmth);
         tp.wow = pv[P::tapeWow];
         tp.flutter = pv[P::tapeFlutter];
-        tp.age = pv[P::tapeAge] + (warmth - 0.5f) * 0.5f;
+        tp.age = pv[P::tapeAge] + macro::tapeAgeOffset (warmth);
         tp.mix = pv[P::tapeMix];
         tape.process (l, r, n, tp);
 
         OutputStage::Params op;
-        op.tilt = pv[P::outTilt] - (warmth - 0.5f) * 0.9f;
+        op.tilt = pv[P::outTilt] + macro::tiltOffset (warmth);
         op.width = pv[P::outWidth];
         op.gainDb = pv[P::outGain];
-        op.warmShelfDb = (warmth - 0.5f) * 5.0f;
+        op.warmShelfDb = macro::warmShelfDb (warmth);
         output.process (l, r, n, op);
 
         // ---- global mix, limiter, bypass ----------------------------------------------

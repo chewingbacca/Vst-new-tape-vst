@@ -114,7 +114,9 @@ public:
         const float phaseInc = rate / fs;
         const float common = driftCommon.tick();
         const float sideL = driftSide[0].tick(), sideR = driftSide[1].tick();
-        const float spreadNow = spreadS.target;
+        // Any pitch difference between the sides integrates into a time difference, so even a little spread
+        // decorrelates the image quickly. Square-law so the lower half of the knob stays centred.
+        const float spreadNow = spreadS.target * spreadS.target;
         const float cw = std::sqrt (1.0f - 0.75f * spreadNow), sw = std::sqrt (0.75f * spreadNow);
         driftSmooth[0].target = cw * common + sw * sideL;
         driftSmooth[1].target = cw * common + sw * sideR;
@@ -169,7 +171,7 @@ public:
                 auto& h = heads[ch];
                 h.line.push (in[ch]);
 
-                const float lfo = Lfo::sineFromPhase (phase + (ch == 0 ? 0.0f : 0.25f * spread));
+                const float lfo = Lfo::sineFromPhase (phase + (ch == 0 ? 0.0f : 0.25f * spread * spread));
                 // weak spring towards the rest delay: sharpens very slightly if the head has fallen behind
                 const float pull = std::clamp ((h.delay - rest) * (1000.0f / fs), -maxPull, maxPull);
                 const float cents = wobble * lfo + drift * 0.6f * driftSmooth[ch].next() - dip * dipEnv + pull;
