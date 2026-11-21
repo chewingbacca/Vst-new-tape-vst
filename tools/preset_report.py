@@ -53,7 +53,10 @@ def main():
         b = bands_db(play, fs); b = b - b.mean()
         l, r = play[:, 0], play[:, 1]
         corr = np.sum(l * r) / np.sqrt(np.sum(l * l) * np.sum(r * r) + 1e-30)
+        hop = int(0.05 * fs)
+        env = np.array([rms_db(play[i:i + hop]) for i in range(0, len(play) - hop, hop)])
         row = dict(idx=idx, name=name, cat=cat, rms=rms_db(play), peak=info["peakDb"], lim=info["limiterDb"], bands=b,
+                   dyn=float(np.percentile(env, 95) - np.percentile(env, 5)),
                    corr=corr, tail=tail_seconds(x, fs), cpu=info["cpuPct"], bad=info["bad"])
         rows.append(row)
         flag = " BAD" if row["bad"] else ""
@@ -66,7 +69,8 @@ def main():
 def target_for(row):
     if row["cat"] == "Utility":
         return None
-    fuzzy = row["rms_untrimmed"] > -19.0          # sustaining fuzz presets
+    # sustaining fuzz walls have almost no dynamics left (long reverbs flatten dynamics too, hence the category test)
+    fuzzy = row["dyn"] < 7.0 and row["cat"] != "Ambient"
     if fuzzy:
         return -17.5
     return -22.0 if row["cat"] == "Ambient" else -20.5

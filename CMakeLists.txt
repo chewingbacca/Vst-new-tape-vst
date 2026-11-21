@@ -101,8 +101,8 @@ if(SWOON_BUILD_PLUGIN)
 
     # Headless editor renderer used for visual review of the UI (not shipped).
     if(SWOON_BUILD_TESTS)
-        juce_add_console_app(swoon_ui_snapshot PRODUCT_NAME "swoon_ui_snapshot")
-        target_sources(swoon_ui_snapshot PRIVATE Tests/ui_snapshot.cpp)
+        # A plain executable on top of the plugin's shared code (which already carries the JUCE modules).
+        add_executable(swoon_ui_snapshot Tests/ui_snapshot.cpp)
         target_link_libraries(swoon_ui_snapshot PRIVATE Swoon)
     endif()
 endif()

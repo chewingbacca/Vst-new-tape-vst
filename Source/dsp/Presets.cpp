@@ -315,7 +315,7 @@ std::vector<PresetDef> makeFactoryPresets()
     p.push_back (build ("Velcro Bloom", "Wall",
         "Notes spit and choke off at the fuzz, then open out behind themselves in the reverse swell.", {
             { P::wall, 0.55f }, { P::wash, 0.55f }, { P::glide, 0.3f }, { P::blur, 0.3f },
-            { P::fuzzType, Velcro }, { P::fuzzVoice, Full }, { P::fuzzSustain, 0.7f }, { P::fuzzTone, 0.45f }, { P::fuzzGate, 0.05f }, { P::fuzzStack, 0.2f }, { P::fuzzLevel, 3.0f },
+            { P::fuzzType, Velcro }, { P::fuzzVoice, Full }, { P::fuzzSustain, 0.7f }, { P::fuzzTone, 0.45f }, { P::fuzzGate, 0.05f }, { P::fuzzStack, 0.2f },
             { P::ampCab, Open212 },
             { P::revOn, 1.0f }, { P::revMode, Swell }, { P::revTime, 380.0f }, { P::revMix, 0.6f },
             { P::focMix, 0.15f }, { P::modMix, 0.1f },
@@ -465,7 +465,7 @@ std::vector<PresetDef> makeFactoryPresets()
     p.push_back (build ("Moth Wings", "Texture",
         "Gated velcro fuzz, a quick phaser and a short reverse flutter behind each note.", {
             { P::wall, 0.45f }, { P::wash, 0.4f }, { P::glide, 0.3f }, { P::blur, 0.5f },
-            { P::fuzzType, Velcro }, { P::fuzzVoice, Flat }, { P::fuzzSustain, 0.6f }, { P::fuzzMix, 0.7f }, { P::fuzzGate, 0.05f }, { P::fuzzLevel, 3.0f },
+            { P::fuzzType, Velcro }, { P::fuzzVoice, Flat }, { P::fuzzSustain, 0.6f }, { P::fuzzMix, 0.7f }, { P::fuzzGate, 0.05f },
             { P::ampCab, Chime112 },
             { P::modMode, Phaser }, { P::modRate, 1.8f }, { P::modDepth, 0.4f }, { P::modMix, 0.4f },
             { P::revOn, 1.0f }, { P::revMode, Swell }, { P::revTime, 150.0f }, { P::revMix, 0.4f },

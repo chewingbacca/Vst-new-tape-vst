@@ -408,7 +408,7 @@ public:
                 w = (1.0f - t) * lo * voiceCfg.loGain + t * hi * voiceCfg.hiGain;
                 w = c.body.process (w);
                 w = c.fizz.lp (w);
-                w = c.dc.process (w) * voiceCfg.makeup * level * swGain;
+                w = c.dc.process (w) * voiceCfg.makeup * typeCfg.makeup * level * swGain;
                 if (isBad (w))
                 {
                     w = 0.0f;
@@ -437,7 +437,7 @@ private:
 
     static constexpr int kStackBase = 2;   // fixed samples of delay in the stack line (so cubic reads are valid)
 
-    struct TypeCfg { float gain1, gain2, octave, starve, corner1, corner2, inHp, midHp; };
+    struct TypeCfg { float gain1, gain2, octave, starve, corner1, corner2, inHp, midHp, makeup; };
     struct VoiceCfg { float lpHz, hpHz, loGain, hiGain, bodyHz, bodyDb, bodyQ, makeup; };
 
     void configureType (int type) noexcept
@@ -446,9 +446,9 @@ private:
         switch (type)
         {
             default:
-            case 0: typeCfg = { 15.0f, 15.0f, 0.0f, 0.0f, 1300.0f, 1500.0f, 75.0f, 95.0f }; break;    // sustain
-            case 1: typeCfg = { 12.0f, 10.0f, 0.85f, 0.0f, 2600.0f, 3200.0f, 180.0f, 160.0f }; break; // octave
-            case 2: typeCfg = { 8.0f, 14.0f, 0.0f, 1.0f, 2200.0f, 3800.0f, 110.0f, 60.0f }; break;    // velcro
+            case 0: typeCfg = { 15.0f, 15.0f, 0.0f, 0.0f, 1300.0f, 1500.0f, 75.0f, 95.0f, 1.0f }; break;    // sustain
+            case 1: typeCfg = { 12.0f, 10.0f, 0.85f, 0.0f, 2600.0f, 3200.0f, 180.0f, 160.0f, 1.2f }; break; // octave
+            case 2: typeCfg = { 8.0f, 14.0f, 0.0f, 1.0f, 2200.0f, 3800.0f, 110.0f, 60.0f, 1.9f }; break;    // velcro
         }
         for (int ch = 0; ch < 2; ++ch)
         {
@@ -471,8 +471,8 @@ private:
         {
             case 0:  voiceCfg = { 408.0f, 723.0f, 1.0f, 1.0f, 500.0f, 0.0f, 0.7f, 1.55f }; break;    // flat
             default:
-            case 1:  voiceCfg = { 900.0f, 480.0f, 1.45f, 0.85f, 520.0f, 2.5f, 0.7f, 1.0f }; break;   // full
-            case 2:  voiceCfg = { 408.0f, 1809.0f, 1.0f, 1.0f, 900.0f, -2.0f, 1.0f, 2.1f }; break;   // scoop
+            case 1:  voiceCfg = { 900.0f, 480.0f, 1.45f, 0.85f, 520.0f, 2.5f, 0.7f, 0.75f }; break;  // full
+            case 2:  voiceCfg = { 408.0f, 1809.0f, 1.0f, 1.0f, 900.0f, -2.0f, 1.0f, 2.35f }; break;  // scoop
         }
         for (auto& c : chans)
         {
@@ -532,7 +532,7 @@ private:
 
     // input booster (x9.6) into thermal-voltage units (1.0 full scale ~ 1 V, Vt ~ 45 mV)
     static constexpr float preGain = 9.6f / 0.045f;
-    static constexpr float outScale = 0.042f;         // diode rails sit near u = +-10; lands a full wall near -16 dBFS RMS
+    static constexpr float outScale = 0.027f;         // diode rails sit near u = +-10; lands a full wall near -16 dBFS RMS
 };
 
 } // namespace swoon
