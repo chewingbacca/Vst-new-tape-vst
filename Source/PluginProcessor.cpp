@@ -154,6 +154,23 @@ void SwoonAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
 void SwoonAudioProcessor::releaseResources() {}
 
+double SwoonAudioProcessor::getTailLengthSeconds() const
+{
+    // Hosts use this to decide how long to keep rendering after the input stops, so follow the settings:
+    // the hall's decay (as scaled by the Wash macro) dominates; delays and the reverse buffer need a few seconds.
+    const auto value = [this] (swoon::P p) { return rawParams[static_cast<size_t> (p)]->load (std::memory_order_relaxed); };
+
+    double tail = 6.0;
+    if (value (swoon::P::washOn) > 0.5f && value (swoon::P::wash) > 0.0f)
+    {
+        if (value (swoon::P::washFreeze) > 0.5f)
+            return 600.0;
+        const double decay = value (swoon::P::washDecay) * std::pow (2.0, (value (swoon::P::wash) - 0.5) * 3.0);
+        tail = juce::jmax (tail, juce::jmin (decay, 120.0) * (value (swoon::P::washShimmer) > 0.01f ? 1.6 : 1.1) + 2.0);
+    }
+    return tail;
+}
+
 void SwoonAudioProcessor::reset()
 {
     engine.reset();
