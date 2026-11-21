@@ -221,6 +221,8 @@ void SwoonAudioProcessor::processInternal (juce::AudioBuffer<float>& buffer, boo
 
     // The host may hand us more samples than it promised in prepareToPlay; process in slices.
     const int maxSlice = stereoScratch.getNumSamples();
+    if (maxSlice <= 0)
+        return;     // processBlock before prepareToPlay: nothing sensible to do
     float* scratchL = stereoScratch.getWritePointer (0);
     float* scratchR = stereoScratch.getWritePointer (1);
 

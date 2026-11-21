@@ -87,7 +87,7 @@ public:
         }
         gate.reset();
         modeSwitch.reset();
-        grainPhase = 0.0f;
+        grainPhase = 0.0;
         first = true;
         lastSmear = -1.0f;
     }
@@ -100,7 +100,7 @@ public:
             return;
         }
 
-        timeS.target = std::clamp (p.timeMs, 40.0f, kMaxSeconds * 1000.0f) * 0.001f * fs;
+        timeS.target = static_cast<double> (std::clamp (p.timeMs, 40.0f, kMaxSeconds * 1000.0f) * 0.001f * fs);
         fbS.target = gate.flushing ? 0.0f : std::clamp (p.feedback, 0.0f, 0.92f);
         smearS.target = clamp01 (p.smear);
         toneS.target = clamp01 (p.tone);
@@ -141,7 +141,7 @@ public:
         float* io[2] = { l, r };
         for (int i = 0; i < n; ++i)
         {
-            const float time = timeS.next();
+            const float time = static_cast<float> (timeS.next());
             const float fb = fbS.next();
             const float m = gate.mix.next();
             bool changed = false;
@@ -149,9 +149,24 @@ public:
             const int mode = modeSwitch.current;
 
             // reverse-grain clock (shared by both channels): two grains half a window apart
-            grainPhase += 1.0f / std::max (64.0f, time);
-            if (grainPhase >= 1.0f)
-                grainPhase -= 1.0f;
+            grainPhase += 1.0 / std::max (64.0, static_cast<double> (time));   // double: no pitch error at long times
+            if (grainPhase >= 1.0)
+                grainPhase -= 1.0;
+            const float grainPh = static_cast<float> (grainPhase);
+
+            if (changed)
+            {
+                // the delay lines are kept current in every mode; only the small filters need a clean start
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    for (auto& a : ap[ch])
+                        a.reset();
+                    fbLp[ch].reset();
+                    fbHp[ch].reset();
+                    tone[ch].reset();
+                    tapeFb[ch] = 0.0f;
+                }
+            }
 
             float wet[2];
             for (int ch = 0; ch < 2; ++ch)
@@ -159,14 +174,16 @@ public:
                 const float in = gate.flushing ? 0.0f : io[ch][i];
                 float x = in;
 
+                // Every line is written in every mode, so switching mode never replays old audio.
+                tapeLine[ch].push (mode != 0 ? in + tapeFb[ch] * fb : in);
+
                 if (mode != 0)
                 {
                     // --- true reverse delay ---
-                    tapeLine[ch].push (in + tapeFb[ch] * fb);
                     float rev = 0.0f;
                     for (int g = 0; g < 2; ++g)
                     {
-                        float ph = grainPhase + 0.5f * static_cast<float> (g);
+                        float ph = grainPh + 0.5f * static_cast<float> (g);
                         if (ph >= 1.0f)
                             ph -= 1.0f;
                         // delay grows at two samples per sample: the head moves backwards through the recording
@@ -187,6 +204,10 @@ public:
                         fed += fb * fbHp[ch].hp (fbLp[ch].lp (regenLine[ch].readLinear (time)));
                         regenLine[ch].push (softSat (fed * 0.5f) * 2.0f);
                     }
+                    else
+                    {
+                        regenLine[ch].push (fed);
+                    }
                     swellLine[ch].push (fed);
 
                     float sum = 0.0f;
@@ -199,6 +220,11 @@ public:
                     for (int k = 0; k < 3; ++k)
                         sum = ap[ch][k].process (sum, apGain);
                     x = sum * 1.25f;
+                }
+                else
+                {
+                    swellLine[ch].push (in);
+                    regenLine[ch].push (in);
                 }
 
                 wet[ch] = tone[ch].lp (x) * sw;
@@ -246,8 +272,10 @@ private:
 
     ModuleGate gate;
     ModeSwitch modeSwitch;
-    Smooth timeS, fbS, smearS, toneS;
-    float fs = 48000.0f, grainPhase = 0.0f, lastSmear = -1.0f;
+    SmoothD timeS;
+    Smooth fbS, smearS, toneS;
+    double grainPhase = 0.0;
+    float fs = 48000.0f, lastSmear = -1.0f;
     bool first = true;
 };
 

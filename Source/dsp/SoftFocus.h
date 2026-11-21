@@ -220,7 +220,7 @@ public:
             const float dryL = l[i], dryR = r[i];
             const float inL = dryL, inR = dryR;
             const float feed = gate.flushing ? 0.0f : 1.0f;
-            const float time = timeS.next();
+            const float time = static_cast<float> (timeS.next());
             const float fb = fbS.next();
             const float hz = hazeS.next();
             const float m = gate.mix.next();
@@ -278,7 +278,8 @@ private:
     HazeVerb haze;
     Lfo lfo[4];
     ModuleGate gate;
-    Smooth timeS, fbS, detuneS, hazeS, toneS;
+    SmoothD timeS;
+    Smooth fbS, detuneS, hazeS, toneS;
     float fs = 48000.0f;
     bool first = true;
 };

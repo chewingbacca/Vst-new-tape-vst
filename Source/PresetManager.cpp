@@ -102,10 +102,14 @@ void PresetManager::markLoaded (int index, const juce::String& name)
 
 void PresetManager::loadPreset (int index)
 {
-    if (index < 0 || index >= (int) entries.size())
-        return;
-
-    const auto& entry = entries[(size_t) index];
+    Entry entry;
+    {
+        // a host may change program off the message thread while the user list is being rescanned
+        const juce::ScopedLock sl (stateLock);
+        if (index < 0 || index >= (int) entries.size())
+            return;
+        entry = entries[(size_t) index];
+    }
 
     if (entry.isFactory)
     {
@@ -209,6 +213,7 @@ bool PresetManager::deleteUserPreset (int index)
 
 juce::String PresetManager::getFactoryPresetName (int index) const
 {
+    const juce::ScopedLock sl (stateLock);
     return index >= 0 && index < numFactory ? entries[(size_t) index].name : juce::String();
 }
 

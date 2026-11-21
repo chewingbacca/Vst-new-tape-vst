@@ -8,11 +8,14 @@
 #include "dsp/Glide.h"
 #include "dsp/Oversampler.h"
 #include "dsp/Presets.h"
+#include "dsp/Reverse.h"
 #include "dsp/Util.h"
 #include "dsp/Wash.h"
 
 #include <cstdio>
 #include <functional>
+#include <initializer_list>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -474,6 +477,112 @@ TEST (wash_decays_never_grows_and_freeze_holds)
     CHECK (released < 0.05 * held1);
 }
 
+TEST (wash_freeze_is_lossless_after_a_size_change_and_does_not_survive_switch_off)
+{
+    const double sr = 48000.0;
+    Lcg rng;
+    for (double rate : { 48000.0, 192000.0 })
+    {
+        Wash wash;
+        wash.prepare (rate);
+        Wash::Params p;
+        p.mix = 1.0f;
+        p.decay = 6.0f;
+        p.size = 0.3f;
+
+        auto run = [&] (double seconds, bool noiseIn) -> double
+        {
+            double sumSq = 0.0;
+            size_t count = 0;
+            const int blocks = static_cast<int> (seconds * rate / kChunk);
+            for (int b = 0; b < blocks; ++b)
+            {
+                float l[kChunk], r[kChunk];
+                for (int i = 0; i < kChunk; ++i)
+                {
+                    l[i] = noiseIn ? 0.25f * rng.next() : 0.0f;
+                    r[i] = noiseIn ? 0.25f * rng.next() : 0.0f;
+                }
+                wash.process (l, r, kChunk, p);
+                for (int i = 0; i < kChunk; ++i)
+                {
+                    sumSq += static_cast<double> (l[i]) * l[i] + static_cast<double> (r[i]) * r[i];
+                    ++count;
+                }
+            }
+            return std::sqrt (sumSq / static_cast<double> (count));
+        };
+
+        run (1.0, true);
+        p.size = 0.9f;                 // every line length moves, then has to settle on whole samples again
+        run (8.0, true);
+        p.freeze = true;
+        run (0.5, false);
+        const double a = run (1.0, false);
+        run (20.0, false);
+        const double b = run (1.0, false);
+        CHECK (a > 1.0e-4);
+        CHECK_NEAR (20.0 * std::log10 (b / a), 0.0, 0.5);
+
+        // switch the module off while frozen, release freeze while it is off, switch it back on: nothing left
+        p.on = false;
+        run (3.0, false);
+        p.freeze = false;
+        run (1.0, false);
+        p.on = true;
+        const double leftover = run (1.0, false);
+        CHECK (leftover < 1.0e-6);
+    }
+    (void) sr;
+}
+
+TEST (reverse_mode_switch_does_not_replay_old_audio)
+{
+    const double sr = 48000.0;
+    Reverse rev;
+    rev.prepare (sr);
+    Reverse::Params p;
+    p.on = true;
+    p.mix = 1.0f;
+    p.feedback = 0.6f;
+    Lcg rng;
+
+    auto run = [&] (double seconds, bool noiseIn) -> double
+    {
+        double sumSq = 0.0;
+        size_t count = 0;
+        const int blocks = static_cast<int> (seconds * sr / kChunk);
+        for (int b = 0; b < blocks; ++b)
+        {
+            float l[kChunk], r[kChunk];
+            for (int i = 0; i < kChunk; ++i)
+                l[i] = r[i] = noiseIn ? 0.2f * rng.next() : 0.0f;
+            rev.process (l, r, kChunk, p);
+            for (int i = 0; i < kChunk; ++i)
+            {
+                sumSq += static_cast<double> (l[i]) * l[i];
+                ++count;
+            }
+        }
+        return std::sqrt (sumSq / static_cast<double> (count));
+    };
+
+    for (int from = 0; from < 3; ++from)
+        for (int to = 0; to < 3; ++to)
+        {
+            if (from == to)
+                continue;
+            rev.reset();
+            p.mode = from;
+            run (2.0, true);            // fill this mode's memory
+            p.mode = to;
+            run (20.0, false);          // long silence in the other mode: everything must have died away
+            p.mode = from;
+            const double back = run (3.0, false);
+            CHECK (back < 1.0e-5);
+        }
+}
+
 TEST (glide_follows_requested_pitch_and_survives_splices)
 {
     const double sr = 48000.0;
@@ -577,16 +686,16 @@ TEST (engine_latency_is_constant_and_wet_path_is_aligned)
 
 TEST (engine_output_is_identical_for_any_block_size)
 {
-    // Control-rate updates are driven by an internal chunk counter that restarts on each process() call, so
-    // results are only bit-identical for block sizes that are multiples of kChunk. Check that, and check that
-    // odd block sizes agree closely (same sound, different control-rate phase).
+    // The engine collects input into fixed internal chunks, so the result must not depend on how the host
+    // slices the audio - including every modulation source (wow, flutter, drift, LFOs), which run at control
+    // rate. Everything on, odd and tiny block sizes, bit-for-bit.
     ParamValues pv;
     pv[P::revOn] = 1.0f;
-    pv[P::glideOn] = 0.0f;      // random drift generators advance per chunk; keep this test deterministic in time
-    pv[P::tapeWow] = 0.0f;
-    pv[P::tapeFlutter] = 0.0f;
-    pv[P::fuzzStack] = 0.0f;
-    pv[P::wall] = 0.2f;
+    pv[P::washShimmer] = 0.4f;
+    pv[P::tapeWow] = 0.8f;
+    pv[P::tapeFlutter] = 0.8f;
+    pv[P::glideSpread] = 0.7f;
+    pv[P::fuzzStack] = 0.8f;
 
     auto render = [&] (int block)
     {
@@ -600,11 +709,107 @@ TEST (engine_output_is_identical_for_any_block_size)
         return l;
     };
 
-    const auto a = render (32), b = render (512), c = render (4096);
-    double maxDiff = 0.0;
-    for (size_t i = 0; i < a.size(); ++i)
-        maxDiff = std::max ({ maxDiff, static_cast<double> (std::abs (a[i] - b[i])), static_cast<double> (std::abs (a[i] - c[i])) });
-    CHECK (maxDiff < 1.0e-6);
+    const auto ref = render (32);
+    for (int block : { 1, 7, 16, 48, 333, 512, 4096 })
+    {
+        const auto x = render (block);
+        double maxDiff = 0.0;
+        for (size_t i = 0; i < ref.size(); ++i)
+            maxDiff = std::max (maxDiff, static_cast<double> (std::abs (ref[i] - x[i])));
+        CHECK (maxDiff == 0.0);
+    }
+}
+
+TEST (engine_reorder_never_gets_stuck)
+{
+    // Order changes arriving while an earlier change is still fading, draining or settling must always resolve.
+    auto setOrder = [] (ParamValues& pv, std::initializer_list<int> positions)
+    {
+        size_t k = 0;
+        for (int p : positions)
+            pv[kOrderParams[k++]] = static_cast<float> (p);
+    };
+
+    for (int gap = 16; gap <= 1600; gap += 24)
+    {
+        Engine e;
+        e.prepare (48000.0, 512);
+        ParamValues pv;
+        pv[P::fuzzOn] = 0.0f;
+        std::vector<float> l (48000 * 2), r (48000 * 2);
+        for (size_t i = 0; i < l.size(); ++i)
+            l[i] = r[i] = static_cast<float> (0.3 * std::sin (2.0 * pi * 220.0 * static_cast<double> (i) / 48000.0));
+
+        size_t pos = 0;
+        auto run = [&] (size_t count)
+        {
+            for (size_t end = pos + count; pos < end;)
+            {
+                const int n = static_cast<int> (std::min<size_t> (16, end - pos));
+                e.process (l.data() + pos, r.data() + pos, n, pv);
+                pos += static_cast<size_t> (n);
+            }
+        };
+
+        run (12000);
+        setOrder (pv, { 1, 7, 3, 4, 5, 6, 2 });       // A -> B
+        run (static_cast<size_t> (gap));
+        setOrder (pv, { 7, 6, 5, 4, 3, 2, 1 });       // B -> C before B has finished
+        run (static_cast<size_t> (gap));
+        setOrder (pv, { 1, 2, 3, 4, 5, 6, 7 });       // and back to A
+        run (static_cast<size_t> (gap));
+        setOrder (pv, { 1, 7, 3, 4, 5, 6, 2 });       // A -> B again
+        run (l.size() - pos);
+        CHECK (rmsOf (l, l.size() - 24000, l.size()) > 0.05);
+    }
+}
+
+TEST (engine_bypass_engaged_at_run_time_is_bit_exact)
+{
+    Engine e;
+    e.prepare (48000.0, 512);
+    ParamValues pv;
+    const size_t latency = static_cast<size_t> (e.getLatencySamples());
+    Lcg rng;
+    std::vector<float> l (96000), r (96000);
+    for (size_t i = 0; i < l.size(); ++i)
+    {
+        l[i] = 0.3f * rng.next();
+        r[i] = 0.3f * rng.next();
+    }
+    const auto refL = l, refR = r;
+
+    for (size_t pos = 0; pos < l.size(); pos += 512)
+    {
+        pv[P::bypass] = pos >= 24000 ? 1.0f : 0.0f;
+        e.process (l.data() + pos, r.data() + pos, static_cast<int> (std::min<size_t> (512, l.size() - pos)), pv);
+    }
+    double maxErr = 0.0;
+    for (size_t i = 60000; i < 95000; ++i)
+        maxErr = std::max ({ maxErr, static_cast<double> (std::abs (l[i] - refL[i - latency])),
+                             static_cast<double> (std::abs (r[i] - refR[i - latency])) });
+    CHECK (maxErr == 0.0);
+}
+
+TEST (engine_swallows_non_finite_input)
+{
+    Engine e;
+    e.prepare (48000.0, 512);
+    ParamValues pv;
+    pv[P::revOn] = 1.0f;
+    std::vector<float> l (48000), r (48000);
+    for (size_t i = 0; i < l.size(); ++i)
+        l[i] = r[i] = static_cast<float> (0.3 * std::sin (2.0 * pi * 220.0 * static_cast<double> (i) / 48000.0));
+    l[10000] = std::numeric_limits<float>::quiet_NaN();
+    r[10001] = std::numeric_limits<float>::infinity();
+    l[10002] = -std::numeric_limits<float>::infinity();
+    r[10003] = 1.0e30f;
+    runEngine (e, l, r, pv, 256);
+    bool finite = true;
+    for (size_t i = 0; i < l.size(); ++i)
+        finite = finite && std::isfinite (l[i]) && std::isfinite (r[i]) && std::abs (l[i]) <= 1.0f;
+    CHECK (finite);
+    CHECK (rmsOf (l, 30000, 48000) > 0.01);       // still making sound afterwards: nothing was wiped
 }
 
 TEST (engine_survives_parameter_abuse)

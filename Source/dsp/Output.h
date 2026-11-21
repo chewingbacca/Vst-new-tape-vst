@@ -15,6 +15,7 @@ public:
     {
         attack = 1.0f - std::exp (-1.0f / (0.0015f * rate));
         release = 1.0f - std::exp (-1.0f / (0.16f * rate));
+        meterDecay = std::exp (-1.0f / (0.04f * rate));
         reset();
     }
     void reset() noexcept { env = 0.0f; reductionDb = 0.0f; }
@@ -30,7 +31,7 @@ public:
 
         l = clip (l * g);
         r = clip (r * g);
-        reductionDb = std::max (reductionDb * 0.9995f, -gainToDb (g));
+        reductionDb = std::max (reductionDb * meterDecay, -gainToDb (g));
     }
 
     float getReductionDb() const noexcept { return reductionDb; }
@@ -49,7 +50,7 @@ private:
         return std::copysign (kKnee + range * std::tanh ((a - kKnee) / range), x);
     }
 
-    float env = 0.0f, attack = 0.1f, release = 0.001f, reductionDb = 0.0f;
+    float env = 0.0f, attack = 0.1f, release = 0.001f, reductionDb = 0.0f, meterDecay = 0.9995f;
 };
 
 class OutputStage

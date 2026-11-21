@@ -66,7 +66,7 @@ private:
     std::vector<Entry> entries;
     int numFactory = 0;
     // Hosts may restore state or change program off the message thread: the name and index are guarded.
-    juce::CriticalSection stateLock;
+    mutable juce::CriticalSection stateLock;
     std::atomic<int> currentIndex { 0 };
     juce::String currentName;
     std::atomic<bool> modified { false };

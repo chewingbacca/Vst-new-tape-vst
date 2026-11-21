@@ -66,7 +66,25 @@ inline float fastLog (float x) noexcept
          + 2.0f * t * (1.0f + t2 * (0.333333333f + t2 * (0.2f + t2 * (0.142857143f + t2 * 0.111111111f))));
 }
 
-inline bool isBad (float x) noexcept { return ! (std::abs (x) < 1.0e6f); }   // catches NaN, inf and absurd values
+/** True for NaN, infinity and absurdly large values. Works on the bit pattern, so it cannot be optimised
+    away by fast-math style floating-point modes. */
+inline bool isBad (float x) noexcept
+{
+    uint32_t bits;
+    std::memcpy (&bits, &x, sizeof (bits));
+    return (bits & 0x7FFFFFFFu) > 0x49742400u;      // |x| > 1e6, or exponent all ones
+}
+
+/** Makes anything a host might hand us safe to process: non-finite samples become silence and the rest is
+    limited to +-16 (about +24 dBFS). */
+inline float sanitise (float x) noexcept
+{
+    uint32_t bits;
+    std::memcpy (&bits, &x, sizeof (bits));
+    if ((bits & 0x7F800000u) == 0x7F800000u)
+        return 0.0f;
+    return std::clamp (x, -16.0f, 16.0f);
+}
 
 inline int nextPow2 (int n) noexcept
 {
@@ -77,20 +95,34 @@ inline int nextPow2 (int n) noexcept
 }
 
 //==============================================================================
-/** One-pole parameter smoother. */
-struct Smooth
+/** One-pole parameter smoother.
+
+    A plain one-pole stalls short of its target once the step falls below half a unit in the last place
+    (noticeably so for large values such as delay lengths in samples). When that happens the value is moved
+    onto the target exactly, so "settled" really means equal. Use SmoothD for sample counts, where the stall
+    distance in float would be whole samples. */
+template <typename T>
+struct SmoothT
 {
-    float y = 0.0f, target = 0.0f, coeff = 1.0f;
+    T y = 0, target = 0, coeff = 1;
 
     void setTime (float seconds, float rate) noexcept
     {
-        coeff = seconds <= 0.0f ? 1.0f : 1.0f - std::exp (-1.0f / (seconds * rate));
+        coeff = seconds <= 0.0f ? T (1) : T (1.0 - std::exp (-1.0 / (static_cast<double> (seconds) * rate)));
     }
-    void snap (float v) noexcept { y = target = v; }
+    void snap (T v) noexcept { y = target = v; }
     void snap() noexcept { y = target; }
-    float next() noexcept { y += coeff * (target - y); return y; }
-    bool isSettled (float eps = 1.0e-4f) const noexcept { return std::abs (target - y) < eps; }
+    T next() noexcept
+    {
+        const T moved = y + coeff * (target - y);
+        y = (moved == y) ? target : moved;
+        return y;
+    }
+    bool isSettled (T eps = T (1.0e-4)) const noexcept { return std::abs (target - y) < eps; }
 };
+
+using Smooth = SmoothT<float>;
+using SmoothD = SmoothT<double>;
 
 //==============================================================================
 /** Small deterministic RNG (xorshift32). */
@@ -429,7 +461,8 @@ struct ModuleGate
         woke = false;
         if (target > 0.0f)
         {
-            if (asleep && ! snapNow)
+            // waking from sleep, or re-enabled while still flushing: either way the wet path starts from nothing
+            if ((asleep || flushing) && ! snapNow)
                 warmRemaining = warmupSamples;
             woke = asleep;
             asleep = false;

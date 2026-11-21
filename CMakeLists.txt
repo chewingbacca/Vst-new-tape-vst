@@ -27,7 +27,8 @@ add_library(swoon_dsp STATIC
     Source/dsp/Engine.cpp)
 target_include_directories(swoon_dsp PUBLIC Source)
 if(MSVC)
-    target_compile_options(swoon_dsp PRIVATE /W4 /fp:fast)
+    # /fp:precise (the default) on purpose: the engine's NaN guards and measured behaviour assume IEEE semantics
+    target_compile_options(swoon_dsp PRIVATE /W4 /fp:precise)
 else()
     target_compile_options(swoon_dsp PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion
         -fno-math-errno -fno-trapping-math)

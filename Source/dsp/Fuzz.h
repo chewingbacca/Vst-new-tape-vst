@@ -194,7 +194,6 @@ public:
         sustainS.setTime (0.03f, fs);
         toneS.setTime (0.03f, fs);
         levelS.setTime (0.03f, fs);
-        stackS.setTime (0.08f, fs);
         for (auto& ch : chans)
             ch.stackDelay.setTime (0.05f, fs);
         driftL.setCutoff (0.13f, fs / kChunk);
@@ -222,7 +221,7 @@ public:
             ch.body.reset();
             ch.fizz.reset();
             ch.dc.reset();
-            ch.stackDelay.snap (0.0f);
+            ch.stackDelay.snap (0.0);
         }
         quad.reset();
         gate.reset();
@@ -271,13 +270,12 @@ public:
         sustainS.target = std::clamp (p.sustain, 0.0f, 1.25f);
         toneS.target = clamp01 (p.tone);
         levelS.target = dbToGain (p.levelDb);
-        stackS.target = clamp01 (p.stack);
+        const float stack = clamp01 (p.stack);
         if (first)
         {
             sustainS.snap();
             toneS.snap();
             levelS.snap();
-            stackS.snap();
         }
         typeSwitch.request (std::clamp (p.type, 0, 2));
         voiceSwitch.request (std::clamp (p.voice, 0, 2));
@@ -293,8 +291,8 @@ public:
         // stack: each side is delayed by its own slowly wandering amount around a common mean, so neither side
         // always leads (which would pull the image over) and the two fuzzes hear slightly different tunings
         const float dL = std::clamp (driftL.tick(), -1.8f, 1.8f), dR = std::clamp (driftR.tick(), -1.8f, 1.8f);
-        chans[0].stackTarget = stackS.target * fs * (0.0090f + 0.0045f * dL);
-        chans[1].stackTarget = stackS.target * fs * (0.0090f + 0.0045f * dR);
+        chans[0].stackTarget = stack * fs * (0.0090f + 0.0045f * dL);
+        chans[1].stackTarget = stack * fs * (0.0090f + 0.0045f * dR);
 
         // ---- per-sample base-rate front end ----------------------------------------
         float pre[2][kChunk];
@@ -323,7 +321,7 @@ public:
                 auto& c = chans[ch];
                 c.stackLine.push (in[ch]);
                 c.stackDelay.target = c.stackTarget;
-                const float d = c.stackDelay.next() + static_cast<float> (kStackBase);
+                const float d = static_cast<float> (c.stackDelay.next()) + static_cast<float> (kStackBase);
                 pre[ch][i] = gate.flushing ? 0.0f : c.stackLine.readCubic (d) * gg;
             }
         }
@@ -510,7 +508,7 @@ private:
         OnePole inHp, midHp, outHp, rectHp, toneLp, toneHp, fizz;
         Biquad body;
         DcBlock dc;
-        Smooth stackDelay;
+        SmoothD stackDelay;
         EnvFollower sagEnv;
         float stackTarget = 0.0f;
     };
@@ -520,7 +518,7 @@ private:
     ModuleGate gate;
     ModeSwitch typeSwitch, voiceSwitch;
     EnvFollower envFast, envSlow;
-    Smooth gateGain, sustainS, toneS, levelS, stackS;
+    Smooth gateGain, sustainS, toneS, levelS;
     DriftNoise driftL { 0x1234567u }, driftR { 0x7654321u };
     TypeCfg typeCfg {};
     VoiceCfg voiceCfg {};

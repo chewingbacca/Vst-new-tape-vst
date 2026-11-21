@@ -40,6 +40,9 @@ public:
     }
     void setRatio (float r) noexcept { ratio = r; }
 
+    /** Keeps the line current without producing output (used while the shifter is idle). */
+    void feed (float x) noexcept { line.push (x); }
+
     float process (float x) noexcept
     {
         line.push (x);
@@ -163,7 +166,6 @@ public:
             shiftLp[k].reset();
             shiftHp[k].reset();
         }
-        shimmerTail = 0;
         gate.reset();
         shimModeSwitch.reset();
         duckEnv.reset();
@@ -187,7 +189,9 @@ public:
         modS.target = clamp01 (p.mod);
         shimS.target = clamp01 (p.shimmer);
         freezeS.target = p.freeze ? 1.0f : 0.0f;
-        preS.target = std::clamp (p.preDelayMs, 0.0f, 250.0f) * 0.001f * fs + 1.0f;
+        preS.target = static_cast<double> (std::clamp (p.preDelayMs, 0.0f, 250.0f) * 0.001f * fs + 1.0f);
+        if (gate.flushing)
+            freezeS.snap (0.0f);     // a held tail must not survive being switched off
         duckS.target = clamp01 (p.duck);
         if (first)
         {
@@ -216,7 +220,7 @@ public:
             // unmodulated (odd) lines settle on whole samples so their reads are lossless
             const float exact = kBaseMs[i] * 0.001f * scale * fs;
             const float len = (i & 1) == 0 ? exact : std::round (exact);
-            lenS[i].target = len;
+            lenS[i].target = static_cast<double> (len);
             if (first)
                 lenS[i].snap();
             lineGain[i] = std::pow (10.0f, -3.0f * (len / fs) / rt60);
@@ -230,7 +234,7 @@ public:
         for (int s = 0; s < n; ++s)
         {
             const float dryL = l[s], dryR = r[s];
-            const float frz = freezeS.next();
+            const float frz = gate.flushing ? 0.0f : freezeS.next();
             const float inGain = (gate.flushing ? 0.0f : 1.0f) * (1.0f - frz);
             const float shimmer = shimS.next() * (1.0f - frz);
             const float m = gate.mix.next();
@@ -243,7 +247,7 @@ public:
             // pre-delay and input low cut
             preDelay[0].push (dryL * inGain);
             preDelay[1].push (dryR * inGain);
-            const float pd = preS.next();
+            const float pd = static_cast<float> (preS.next());
             float inL = preDelay[0].readLinear (pd);
             float inR = preDelay[1].readLinear (pd);
             inHpZ[0] += inHpCoeff * (inL - inHpZ[0]);
@@ -262,20 +266,21 @@ public:
             float v[kLines];
             for (int i = 0; i < kLines; ++i)
             {
-                const float len = lenS[i].next();
+                const float len = static_cast<float> (lenS[i].next());
                 float x;
                 if ((i & 1) == 0)
                 {
                     lfo[i].advance();
                     x = lines[i].readCubic (std::max (2.0f, len + modDepth * lfo[i].sine()));
-                    // frozen: fade to a whole-sample read so the held sound loses nothing per pass
-                    if (frz > 0.0f)
-                        x = lerp (x, lines[i].read (static_cast<int> (len + 0.5f)), frz);
                 }
                 else
                 {
+                    // settles on a whole sample (the smoother lands exactly), where this read is lossless
                     x = lines[i].readLinear (len);
                 }
+                // frozen: fade every line to a whole-sample read so the held sound loses nothing per pass
+                if (frz > 0.0f)
+                    x = lerp (x, lines[i].read (static_cast<int> (len + 0.5f)), frz);
 
                 // damping: low-pass, and a gentle low thinning; both open up fully when frozen
                 lpZ[i] += lpCoeff * (x - lpZ[i]);
@@ -297,7 +302,8 @@ public:
             // shimmer: six lines add a pitch-shifted copy of themselves. The copy's energy is capped at what
             // that line has just lost to its decay gain, so each of those lines stays passive (never more out
             // than in) however the controls are set, while the un-shifted tail keeps its body.
-            if (shimmer > 1.0e-4f || shimmerTail > 0)
+            // The shifters' delay lines are fed all the time, so raising Shimmer never plays stale audio.
+            if (shimmer > 1.0e-4f)
             {
                 const float amt = shimmer * shimSw;
                 for (int k = 0; k < kShimLines; ++k)
@@ -310,7 +316,11 @@ public:
                     const float shifted = shiftHp[k].hp (shifter[k].process (shiftLp[k].process (v[idx])));
                     v[idx] += sGain * shifted;
                 }
-                shimmerTail = shimmer > 1.0e-4f ? shifterFlush : shimmerTail - 1;
+            }
+            else
+            {
+                for (int k = 0; k < kShimLines; ++k)
+                    shifter[k].feed (shiftLp[k].process (v[kShimLine[k]]));
             }
 
             hadamard16 (v);
@@ -380,6 +390,13 @@ private:
             lines[i].reset();
             lpZ[i] = hpZ[i] = 0.0f;
         }
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            preDelay[ch].reset();
+            for (auto& d : diff[ch])
+                d.reset();
+            inHpZ[ch] = 0.0f;
+        }
         for (int k = 0; k < kShimLines; ++k)
         {
             shifter[k].reset();
@@ -404,7 +421,7 @@ private:
 
     DelayLine lines[kLines];
     Lfo lfo[kLines];
-    Smooth lenS[kLines];
+    SmoothD lenS[kLines];
     float lpZ[kLines] {}, hpZ[kLines] {};
     DelayLine preDelay[2];
     Allpass diff[2][4];
@@ -415,12 +432,11 @@ private:
 
     ModuleGate gate;
     ModeSwitch shimModeSwitch;
-    Smooth decayS, sizeS, dampS, lowS, modS, shimS, freezeS, preS, duckS;
+    Smooth decayS, sizeS, dampS, lowS, modS, shimS, freezeS, duckS;
+    SmoothD preS;
     EnvFollower duckEnv;
     DriftNoise drift { 0xD1FFu };
     float fs = 48000.0f;
-    int shimmerTail = 0;
-    static constexpr int shifterFlush = 1 << 15;
     bool first = true;
 };
 

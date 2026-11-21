@@ -32,7 +32,8 @@ public:
     /** Constant for a given sample rate; valid after prepare(). */
     int getLatencySamples() const;
 
-    /** In-place stereo processing. numSamples may be any size, including 0. */
+    /** In-place stereo processing. numSamples may be any size, including 0. The result does not depend on
+        how the audio is split into calls. Non-finite input samples are treated as silence. */
     void process (float* left, float* right, int numSamples, const ParamValues& params);
 
     /** Peak meters for the block most recently processed. */

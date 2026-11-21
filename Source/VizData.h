@@ -22,15 +22,15 @@ struct VizData
 
     // Decimated stereo scope (about 6 kHz rate), single producer / single consumer.
     static constexpr int scopeSize = 2048;   // power of two
-    std::array<float, scopeSize> scopeL {};
-    std::array<float, scopeSize> scopeR {};
+    std::array<std::atomic<float>, scopeSize> scopeL {};
+    std::array<std::atomic<float>, scopeSize> scopeR {};
     std::atomic<int> scopeWrite { 0 };
 
     void pushScope (float l, float r) noexcept
     {
         const int w = scopeWrite.load (std::memory_order_relaxed);
-        scopeL[static_cast<size_t> (w)] = l;
-        scopeR[static_cast<size_t> (w)] = r;
+        scopeL[static_cast<size_t> (w)].store (l, std::memory_order_relaxed);
+        scopeR[static_cast<size_t> (w)].store (r, std::memory_order_relaxed);
         scopeWrite.store ((w + 1) & (scopeSize - 1), std::memory_order_release);
     }
 
@@ -41,8 +41,8 @@ struct VizData
         for (int i = 0; i < count; ++i)
         {
             const int idx = (w - count + i) & (scopeSize - 1);
-            destL[i] = scopeL[static_cast<size_t> (idx)];
-            destR[i] = scopeR[static_cast<size_t> (idx)];
+            destL[i] = scopeL[static_cast<size_t> (idx)].load (std::memory_order_relaxed);
+            destR[i] = scopeR[static_cast<size_t> (idx)].load (std::memory_order_relaxed);
         }
     }
 };

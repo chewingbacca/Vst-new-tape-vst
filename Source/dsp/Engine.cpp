@@ -39,11 +39,19 @@ struct Engine::Impl
     AutoSwell swell;
 
     // module order with click-free switching
+    enum class OrderState { idle, fadeOut, drain, settle, fadeIn };
     std::array<int, kNumSlots> order { 0, 1, 2, 3, 4, 5, 6 };
     std::array<int, kNumSlots> pendingOrder { 0, 1, 2, 3, 4, 5, 6 };
+    OrderState orderState = OrderState::idle;
     float orderGain = 1.0f, orderStep = 0.01f;
     int orderHold = 0;
-    bool orderArmed = false;
+
+    // The engine always works on whole chunks of kChunk samples, whatever block sizes the host uses: input is
+    // collected here and each finished chunk is handed back one chunk later. That costs kChunk samples of
+    // (reported) latency and makes the result independent of the host's buffer size.
+    float fifoIn[2][kChunk] {}, fifoOut[2][kChunk] {};
+    int fifoPos = 0;
+    float chunkInPeak = 0.0f, chunkOutPeakL = 0.0f, chunkOutPeakR = 0.0f;
 
     void prepare (double sampleRate, int maxBlock)
     {
@@ -73,7 +81,7 @@ struct Engine::Impl
         reset();
     }
 
-    void reset()
+    void resetModules()
     {
         fuzz.reset();
         amp.reset();
@@ -90,8 +98,19 @@ struct Engine::Impl
             d.reset();
         orderGain = 1.0f;
         orderHold = 0;
-        orderArmed = false;
+        orderState = OrderState::idle;
         first = true;
+    }
+
+    /** Full reset including the block FIFO (not safe to call from inside processChunk). */
+    void reset()
+    {
+        resetModules();
+        for (auto& ch : fifoIn)
+            std::fill (std::begin (ch), std::end (ch), 0.0f);
+        for (auto& ch : fifoOut)
+            std::fill (std::begin (ch), std::end (ch), 0.0f);
+        fifoPos = 0;
         meters = {};
     }
 
@@ -242,25 +261,58 @@ struct Engine::Impl
             l[i] *= sg;
             r[i] *= sg;
         }
-        meters.inPeak = std::max (meters.inPeak, inPeak);
 
         // ---- reorderable chain --------------------------------------------------------
         // An order change must not put a step into any module's memory (delay lines, reverbs), so as well as
         // dipping the chain's output we fade *every module's input* to silence, swap while nothing is flowing
         // between modules, and fade back in. Reverb and delay tails survive the change and re-emerge after it.
         const bool orderChanging = pendingOrder != order;
-        const bool fading = orderChanging || orderHold > 0 || orderGain < 1.0f;
+        switch (orderState)
+        {
+            case OrderState::idle:
+                if (orderChanging)
+                    orderState = OrderState::fadeOut;
+                break;
+            case OrderState::fadeOut:
+                if (! orderChanging)
+                    orderState = OrderState::fadeIn;            // withdrawn before anything was swapped
+                else if (orderGain <= 0.0f)
+                {
+                    // inputs are silent: let the latency delay lines inside the modules drain, then swap
+                    orderState = OrderState::drain;
+                    orderHold = latency + 2 * kChunk;
+                }
+                break;
+            case OrderState::drain:
+                orderHold -= n;
+                if (orderHold <= 0)
+                {
+                    order = pendingOrder;                       // whatever is wanted by now
+                    orderState = OrderState::settle;
+                }
+                break;
+            case OrderState::settle:
+                orderState = OrderState::fadeIn;                // one silent chunk in the new order
+                break;
+            case OrderState::fadeIn:
+                if (pendingOrder != order)
+                    orderState = OrderState::fadeOut;
+                else if (orderGain >= 1.0f)
+                    orderState = OrderState::idle;
+                break;
+        }
+
+        const bool fading = orderState != OrderState::idle;
         float fade[kChunk];
         if (fading)
         {
+            const float step = orderState == OrderState::fadeOut ? -orderStep
+                             : orderState == OrderState::fadeIn ? orderStep : 0.0f;
+            if (orderState == OrderState::drain || orderState == OrderState::settle)
+                orderGain = 0.0f;
             for (int i = 0; i < n; ++i)
             {
-                if (orderChanging)
-                    orderGain = std::max (0.0f, orderGain - orderStep);
-                else if (orderHold > 0)
-                    --orderHold;
-                else
-                    orderGain = std::min (1.0f, orderGain + orderStep);
+                orderGain = std::clamp (orderGain + step, 0.0f, 1.0f);
                 fade[i] = smoothstep (orderGain);
             }
         }
@@ -281,29 +333,6 @@ struct Engine::Impl
                 l[i] *= fade[i];
                 r[i] *= fade[i];
             }
-
-        if (! orderChanging)
-            orderArmed = false;       // the change was withdrawn before the swap happened
-
-        if (orderChanging && orderGain <= 0.0f)
-        {
-            if (orderHold == 0 && ! orderArmed)
-            {
-                // inputs are silent: wait for the latency delay lines inside the modules to drain, then swap
-                orderHold = latency + 2 * kChunk;
-                orderArmed = true;
-            }
-            else if (orderArmed)
-            {
-                orderHold = std::max (0, orderHold - n);
-                if (orderHold == 0)
-                {
-                    order = pendingOrder;
-                    orderArmed = false;
-                    orderHold = kChunk;
-                }
-            }
-        }
 
         // ---- tape, then output stage --------------------------------------------------
         const float warmth = pv[P::warmth];
@@ -335,8 +364,16 @@ struct Engine::Impl
             limiter.process (a, b);
 
             const float byp = bypassS.next();
-            a += byp * (dry[0][i] - a);
-            b += byp * (dry[1][i] - b);
+            if (byp >= 1.0f)
+            {
+                a = dry[0][i];              // fully bypassed: the delayed input, bit for bit
+                b = dry[1][i];
+            }
+            else if (byp > 0.0f)
+            {
+                a += byp * (dry[0][i] - a);
+                b += byp * (dry[1][i] - b);
+            }
 
             bad = bad || isBad (a) || isBad (b);
             l[i] = a;
@@ -350,13 +387,13 @@ struct Engine::Impl
             // Should never happen; if it does, fail safe: silence this chunk and start clean.
             std::fill (l, l + n, 0.0f);
             std::fill (r, r + n, 0.0f);
-            reset();
+            resetModules();
             return;
         }
 
-        meters.outPeakL = std::max (meters.outPeakL, outPeakL);
-        meters.outPeakR = std::max (meters.outPeakR, outPeakR);
-        meters.limiterReductionDb = limiter.getReductionDb();
+        chunkInPeak = inPeak;
+        chunkOutPeakL = outPeakL;
+        chunkOutPeakR = outPeakR;
         first = false;
     }
 };
@@ -366,17 +403,39 @@ Engine::~Engine() = default;
 
 void Engine::prepare (double sampleRate, int maxBlockSize) { impl->prepare (sampleRate, maxBlockSize); }
 void Engine::reset() { impl->reset(); }
-int Engine::getLatencySamples() const { return impl->latency; }
+int Engine::getLatencySamples() const { return impl->latency + kChunk; }
 const EngineMeters& Engine::getMeters() const { return impl->meters; }
 
 void Engine::process (float* left, float* right, int numSamples, const ParamValues& params)
 {
-    impl->meters.inPeak = impl->meters.outPeakL = impl->meters.outPeakR = 0.0f;
+    auto& e = *impl;
+    bool anyChunk = false;
 
-    for (int offset = 0; offset < numSamples; offset += kChunk)
+    for (int i = 0; i < numSamples; ++i)
     {
-        const int n = std::min (kChunk, numSamples - offset);
-        impl->processChunk (left + offset, right + offset, n, params);
+        const int p = e.fifoPos;
+        e.fifoIn[0][p] = sanitise (left[i]);
+        e.fifoIn[1][p] = sanitise (right[i]);
+        left[i] = e.fifoOut[0][p];
+        right[i] = e.fifoOut[1][p];
+
+        if (++e.fifoPos == kChunk)
+        {
+            e.fifoPos = 0;
+            std::memcpy (e.fifoOut[0], e.fifoIn[0], sizeof (e.fifoOut[0]));
+            std::memcpy (e.fifoOut[1], e.fifoIn[1], sizeof (e.fifoOut[1]));
+            e.chunkInPeak = e.chunkOutPeakL = e.chunkOutPeakR = 0.0f;
+            e.processChunk (e.fifoOut[0], e.fifoOut[1], kChunk, params);
+
+            // meters: the peak over the chunks finished during this call (left alone if none finished)
+            if (! anyChunk)
+                e.meters.inPeak = e.meters.outPeakL = e.meters.outPeakR = 0.0f;
+            anyChunk = true;
+            e.meters.inPeak = std::max (e.meters.inPeak, e.chunkInPeak);
+            e.meters.outPeakL = std::max (e.meters.outPeakL, e.chunkOutPeakL);
+            e.meters.outPeakR = std::max (e.meters.outPeakR, e.chunkOutPeakR);
+            e.meters.limiterReductionDb = e.limiter.getReductionDb();
+        }
     }
 }
 
