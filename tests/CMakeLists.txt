@@ -1,1 +1,20 @@
-# Tests are added as the engine grows.
+# JUCE-free DSP library + unit tests, and the offline plugin render harness.
+file(GLOB SPLINTER_DSP_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Source/dsp/*.cpp")
+add_library(splinter_dsp STATIC ${SPLINTER_DSP_SOURCES})
+target_include_directories(splinter_dsp PUBLIC "${CMAKE_SOURCE_DIR}/Source")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(splinter_dsp PRIVATE -Wall -Wextra -Wno-sign-compare)
+endif()
+
+add_executable(splinter_dsp_tests dsp_tests.cpp)
+target_link_libraries(splinter_dsp_tests PRIVATE splinter_dsp)
+add_test(NAME dsp_unit_tests COMMAND splinter_dsp_tests)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/render_harness.cpp")
+    juce_add_console_app(splinter_harness PRODUCT_NAME "splinter_harness")
+    target_sources(splinter_harness PRIVATE render_harness.cpp)
+    target_compile_definitions(splinter_harness PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(splinter_harness PRIVATE Splinter juce::juce_audio_utils)
+    add_test(NAME render_tests COMMAND splinter_harness --out "${CMAKE_BINARY_DIR}/renders")
+    set_tests_properties(render_tests PROPERTIES TIMEOUT 1800)
+endif()
