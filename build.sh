@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command build: ./build.sh [install] [notest]
+# One-command build: ./build.sh [install] [notest] [pluginval]
 set -euo pipefail
 cd "$(dirname "$0")"
 ARGS=()
@@ -11,5 +11,8 @@ cmake -S . -B build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release "${ARGS[@]}"
 cmake --build build --config Release --parallel
 if [[ " $* " != *" notest "* ]]; then
     ctest --test-dir build --output-on-failure -C Release
+fi
+if [[ " $* " == *" pluginval "* ]]; then
+    scripts/run_pluginval.sh 10
 fi
 echo "Built: build/Splinter_artefacts/Release/{VST3,Standalone}"

@@ -63,8 +63,10 @@ time / volume / sequence slots and momentary FX).
       PatternBank (+ standard curve library), Presets (43 factory), Processor, state
 - [x] Unit tests (tests/dsp_tests.cpp, run with scripts/dsptest.sh) and render
       harness (tests/render_harness.cpp -> build/renders/*.wav + report.txt)
-- [ ] UI (Source/ui) — placeholder editor only so far
-- [ ] pluginval, README
+- [x] UI (Source/ui): Theme, Widgets, WaveformView, CurveEditor, StepGrid, Pages
+      (Perform / Curves / Sequence / Harmony / Output), PluginEditor (scaled canvas)
+- [x] pluginval strictness 10 passes (scripts/run_pluginval.sh), README written
+- [x] tests/ui_snapshot.cpp renders the editor pages to PNG for review
 
 ## Lessons learned (keep these invariants)
 - Every gain that moves must be C1 smooth: use `Fader` (ramp + 2 poles) or
@@ -97,3 +99,12 @@ momentary/hold modes. Glitch 2: lane per effect, weighted random, scenes per
 MIDI note. Effectrix: 14 lanes x 32 steps, 12 sub-patterns on one octave.
 Stutter Edit: rate ramps between note values, gate width, grid-quantised
 triggering. HalfTime: 2x/1.5x/4x, ~4.4 ms default smoothing fade.
+
+## What I would do next
+- Onset detection over-slices sustained polyphonic material (beating between
+  partials passes the energy-rise gate): see Warm Keys demo loop (~96 onsets).
+- Optional zero-latency mode (harmoniser off) for live slice playing.
+- Scale-mode harmony follows a simple chroma-peak pitch tracker; a polyphonic
+  tracker would give better chords on dense material.
+- Tune factory presets by ear; all were authored blind and only checked by measurement.
+- Build and validate on macOS (AU) and Windows; not done here.
