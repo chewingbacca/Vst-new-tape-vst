@@ -26,9 +26,8 @@ void Engine::prepare (double sampleRate, int)
     latency = kReaderLookahead + harmLatency + limLatency;
 
     for (auto& d : mainDelay) d.prepare (harmLatency + 4);
-    for (auto& d : loopDryDelay) d.prepare (harmLatency + 4);
-    for (auto& d : inDelay) d.prepare (kReaderLookahead + harmLatency + 4);
-    for (auto& d : bypassDelay) d.prepare (latency + 4);
+    for (auto& d : dryDelay) d.prepare (harmLatency + 4);
+    for (auto& d : inLine) d.prepare (latency + 8);
 
     int cs = 1; while (cs < kReaderLookahead + harmLatency + 8) cs <<= 1;
     clockDelay.assign ((size_t) cs, 0.0); playDelay.assign ((size_t) cs, 0); clockMask = cs - 1;
@@ -37,13 +36,16 @@ void Engine::prepare (double sampleRate, int)
     freeze.prepare (sampleRate); delayFx.prepare (sampleRate); reverbFx.prepare (sampleRate);
 
     const int ramp = std::max (8, (int) (0.02 * sampleRate));
-    for (auto* s : { &mixSm, &widthSm, &gainSm, &volDepthSm, &warpDepthSm, &bypassSm, &delayLevelSm, &reverbLevelSm, &limiterSm })
+    for (auto* s : { &mixSm, &widthSm, &gainSm, &volDepthSm, &warpDepthSm, &delayLevelSm, &reverbLevelSm, &limiterSm })
         s->setRampSamples (ramp);
-    bypassSm.setRampSamples (std::max (8, (int) (0.012 * sampleRate)));
     for (auto& e : laneEnv) e.setTime (sampleRate, 5.0);
     laneEnv[laneFilter].setTime (sampleRate, 12.0);
     harmEnv.setTime (sampleRate, 8.0);
-    loopGain.setTime (sampleRate, 6.0); dryGain.setTime (sampleRate, 6.0); warpGain.setTime (sampleRate, 2.5);
+    // Playback opens instantly when it starts on quiet audio (a hit sitting on
+    // the beat keeps its whole attack), otherwise over about a millisecond.
+    loopGain.setTimes (sampleRate, 1.2, 6.0); dryGain.setTimes (sampleRate, 1.2, 6.0);
+    sourceFade.setTime (sampleRate, 25.0); warpGain.setTime (sampleRate, 3.5);
+    bypassFade.setTime (sampleRate, 12.0); hpMix.setTime (sampleRate, 25.0); lpMix.setTime (sampleRate, 25.0);
     for (auto& v : voices) v.gain.setTime (sampleRate, 4.0);
     reset();
 }
@@ -51,22 +53,22 @@ void Engine::prepare (double sampleRate, int)
 void Engine::reset()
 {
     ring.clear();
-    loopReader.reset(); dryReader.reset();
+    loopReader.reset(); liveReader.reset(); dryReader.reset();
     for (auto& v : voices) { v.active = false; v.reader.reset(); v.gain.reset (0.0f); }
     harm.reset();
-    for (auto* arr : { mainDelay, inDelay, loopDryDelay, bypassDelay }) for (int c = 0; c < 2; ++c) arr[c].reset();
+    for (auto* arr : { mainDelay, inLine, dryDelay }) for (int c = 0; c < 2; ++c) arr[c].reset();
     std::fill (clockDelay.begin(), clockDelay.end(), beat);
     std::fill (playDelay.begin(), playDelay.end(), (uint8_t) 0);
     crusher.reset(); comb.reset(); sweep.reset(); freeze.reset(); delayFx.reset(); reverbFx.reset();
     for (auto& e : laneEnv) e.reset (0.0f);
     for (auto& h : held) h = HeldRun();
-    harmEnv.reset (0.0f); loopGain.reset (0.0f); dryGain.reset (0.0f); warpGain.reset (1.0f);
+    harmEnv.reset (0.0f); loopGain.reset (0.0f); sourceFade.reset (0.0f); dryGain.reset (0.0f); warpGain.reset (1.0f); bypassFade.reset (0.0f);
     volSlew.reset (1.0f);
     for (int c = 0; c < 2; ++c) { outHp[c].reset(); outLp[c].reset(); }
     tilt.reset(); limiter.reset();
     mixSm.reset (1.0f); widthSm.reset (1.0f); gainSm.reset (1.0f); volDepthSm.reset (1.0f); warpDepthSm.reset (1.0f);
-    bypassSm.reset (0.0f); delayLevelSm.reset (0.7f); reverbLevelSm.reset (0.6f); limiterSm.reset (1.0f);
-    lastHp = lastLp = lastQ = -1.0f; lastTilt = -99.0f;
+    delayLevelSm.reset (0.7f); reverbLevelSm.reset (0.6f); limiterSm.reset (1.0f);
+    hpMix.reset (0.0f); lpMix.reset (0.0f); outUpdateCounter = 0;
     for (auto& e : evalWarp) e.invalidate();
     for (auto& e : evalPost) e.invalidate();
     freezeWasOn = false; freezeRunStart = -1.0e18;
@@ -114,25 +116,25 @@ void Engine::updateBlockParams (const EngineParams& p)
     gainSm.setTarget (dbToGain (p.outGainDb));
     volDepthSm.setTarget (clampv (p.volDepth, 0.0f, 1.0f));
     warpDepthSm.setTarget (std::min (1.0f, 2.0f * clampv (p.warp, 0.0f, 1.0f)));
-    bypassSm.setTarget (p.bypass ? 1.0f : 0.0f);
     delayLevelSm.setTarget (p.delayLevel); reverbLevelSm.setTarget (p.reverbLevel);
     limiterSm.setTarget (p.limiter ? 1.0f : 0.0f);
     volSlew.setTime (sr, std::max (0.5f, p.volSmoothMs));
 
-    if (p.hpFreq != lastHp || p.lpFreq != lastLp || p.filterQ != lastQ)
-    {
-        lastHp = p.hpFreq; lastLp = p.lpFreq; lastQ = p.filterQ;
-        for (int c = 0; c < 2; ++c) { outHp[c].set (sr, p.hpFreq, p.filterQ); outLp[c].set (sr, p.lpFreq, p.filterQ); }
-    }
-    if (p.tiltDb != lastTilt) { lastTilt = p.tiltDb; tilt.set (sr, p.tiltDb); }
+    hpTarget = clampv (p.hpFreq, 20.0f, 2000.0f); lpTarget = clampv (p.lpFreq, 200.0f, 20000.0f);
+    qTarget = clampv (p.filterQ, 0.5f, 4.0f); tiltTarget = clampv (p.tiltDb, -12.0f, 12.0f);
     harm.setFormant (p.formant);
     if (firstBlock)
     {
         firstBlock = false;
         curTimeSlot = wantTimeSlot; curVolSlot = wantVolSlot; curSeqSlotWarp = curSeqSlotPost = wantSeqSlot;
         mixSm.reset (mixSm.target); widthSm.reset (widthSm.target); gainSm.reset (gainSm.target);
-        volDepthSm.reset (volDepthSm.target); warpDepthSm.reset (warpDepthSm.target); bypassSm.reset (bypassSm.target);
+        volDepthSm.reset (volDepthSm.target); warpDepthSm.reset (warpDepthSm.target);
         delayLevelSm.reset (delayLevelSm.target); reverbLevelSm.reset (reverbLevelSm.target); limiterSm.reset (limiterSm.target);
+        sourceFade.reset (p.sourceMode == 1 ? 1.0f : 0.0f); bypassFade.reset (p.bypass ? 1.0f : 0.0f);
+        hpSm = hpTarget; lpSm = lpTarget; qSm = qTarget; tiltSm = tiltTarget;
+        hpMix.reset (hpTarget > 21.0f ? 1.0f : 0.0f); lpMix.reset (lpTarget < 19900.0f ? 1.0f : 0.0f);
+        for (int c = 0; c < 2; ++c) { outHp[c].set (sr, hpSm, qSm); outLp[c].set (sr, lpSm, qSm); }
+        tilt.set (sr, tiltSm);
         seqWarp.pattern = &seqs[curSeqSlotWarp]; seqPost.pattern = &seqs[curSeqSlotPost];
     }
 }
@@ -158,7 +160,7 @@ void Engine::handleMidi (const MidiEvent& e, const EngineParams& p)
             for (auto& c : voices) if (c.active && c.note == e.note) { v = &c; break; }   // retrigger same key
             if (v == nullptr) for (auto& c : voices) if (! c.active) { v = &c; break; }
             if (v == nullptr) { v = &voices[0]; for (auto& c : voices) if (c.releasing) { v = &c; break; } }
-            v->active = true; v->releasing = false; v->note = e.note; v->slice = s; v->fresh = true;
+            v->active = true; v->releasing = false; v->note = e.note; v->slice = s; v->fresh = true; v->live = live;
             v->velocity = 0.35f + 0.65f * clampv (e.velocity, 0.0f, 1.0f);
             const double lb = sl.loopBeats;
             double base = sl.startBeat[s];
@@ -407,7 +409,9 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
     {
         while (midiIdx < numMidi && midi[midiIdx].offset <= n) handleMidi (midi[midiIdx++], p);
 
-        const double T = beat;
+        // The tiny bias makes every "which side of the grid line is this sample on"
+        // decision immune to rounding noise in the host position (it is 2e-5 samples).
+        const double T = beat + 1.0e-9;
         const float xl = inL[n], xr = inR[n];
         ring.write (xl, xr);
         visIn = std::max (visIn, std::max (std::fabs (xl), std::fabs (xr)));
@@ -432,6 +436,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         // post stage additionally lags by the harmoniser latency.
         clockDelay[(size_t) clockW] = T; playDelay[(size_t) clockW] = playingNow ? 1 : 0;
         const double Td = clockDelay[(size_t) ((clockW - kReaderLookahead) & clockMask)];
+        const bool playingD = playDelay[(size_t) ((clockW - kReaderLookahead) & clockMask)] != 0;
         const int cr = (clockW - postDelay) & clockMask;
         const double Tp = clockDelay[(size_t) cr];
         const bool playingP = playDelay[(size_t) cr] != 0;
@@ -442,24 +447,36 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         const double Tw = warpTime (Td, wg, p, ! live);
         const float wgs = warpGain.process (wg);
 
-        // ---- main voice
+        // ---- main voice. Loop and live input have their own readers so that
+        // switching source is a plain gain crossfade.
         float sl = 0.0f, sr_ = 0.0f;
-        const float lg = loopGain.process ((live || (playingNow && p.loopPlay && haveLoop)) ? 1.0f : 0.0f);
-        if (lg > 0.0f)
+        const float lgLive = sourceFade.process (live ? 1.0f : 0.0f);
+        const bool wantLoop = playingD && p.loopPlay && haveLoop;
+        const SourceView ringView = ring.view();
+        const double ringNow = (double) (ring.written() - 1) - lookBeats;
+        const bool needPos = wantLoop || loopGain.y > 0.0f || lgLive > 0.0f;
+        const double pos = needPos ? chopMap (Tw, p, live) : 0.0;
+        if (wantLoop && loopGain.lin <= 0.0f && loopGain.y <= 0.0f)
         {
-            const double pos = chopMap (Tw, p, live);
-            float l, r;
-            if (live)
-            {
-                const SourceView v = ring.view();
-                const double x = (double) (ring.written() - 1) - lookBeats - (Td - pos) * spbNow;
-                loopReader.process (v, x, 1.0, fade, l, r);
-            }
-            else
-                loopReader.process (loopView, pos * spbR, loopRate, fade, l, r);
-            sl += l * lg; sr_ += r * lg;
+            float pl, pr;
+            readSource (loopView, pos * spbR, 1.0, pl, pr);
+            if (std::max (std::fabs (pl), std::fabs (pr)) < 5.0e-4f) loopGain.reset (1.0f);
         }
-        else if (! loopReader.isSilent()) loopReader.reset();
+        const float lgLoop = loopGain.process (wantLoop ? 1.0f : 0.0f) * (1.0f - lgLive);
+        if (lgLive > 0.0f)
+        {
+            float l, r;
+            liveReader.process (ringView, ringNow - (Td - pos) * spbNow, 1.0, fade, l, r);
+            sl += l * lgLive; sr_ += r * lgLive;
+        }
+        if (lgLoop > 0.0f && haveLoop)
+        {
+            float l, r;
+            loopReader.process (loopView, pos * spbR, loopRate, fade, l, r);
+            sl += l * lgLoop; sr_ += r * lgLoop;
+        }
+        if (lgLive <= 0.0f && ! liveReader.isSilent()) liveReader.reset();
+        if ((lgLoop <= 0.0f || ! haveLoop) && ! loopReader.isSilent()) loopReader.reset();
 
         // ---- MIDI slice voices
         for (auto& v : voices)
@@ -472,30 +489,31 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             if (v.releasing && g <= 0.0f) { v.active = false; v.reader.reset(); continue; }
             const double pos = v.srcStart + rel;
             float l, r;
-            if (live)
-            {
-                const SourceView sv = ring.view();
-                v.reader.process (sv, (double) (ring.written() - 1) - lookBeats - (Td - pos) * spbNow, 1.0, fade, l, r);
-            }
-            else if (haveLoop)
-                v.reader.process (loopView, pos * spbR, loopRate, fade, l, r);
+            if (v.live) v.reader.process (ringView, ringNow - (Td - pos) * spbNow, 1.0, fade, l, r);
+            else if (haveLoop) v.reader.process (loopView, pos * spbR, loopRate, fade, l, r);
             else { l = r = 0.0f; }
             sl += l * g; sr_ += r * g;
         }
         sl *= wgs; sr_ *= wgs;
 
-        // ---- dry reference: the unglitched source
+        // ---- dry reference: the unglitched source (live input or plain loop playback)
+        inLine[0].write (xl); inLine[1].write (xr);
         float dl, dr;
-        const float inDl = inDelay[0].process (xl, postDelay), inDr = inDelay[1].process (xr, postDelay);
-        if (live) { dl = inDl; dr = inDr; dryGain.process (0.0f); if (! dryReader.isSilent()) dryReader.reset(); }
-        else
         {
-            const float dg = dryGain.process ((playingNow && p.loopPlay && haveLoop) ? 1.0f : 0.0f);
+            if (wantLoop && dryGain.lin <= 0.0f && dryGain.y <= 0.0f)
+            {
+                float pl, pr;
+                readSource (loopView, Td * spbR, 1.0, pl, pr);
+                if (std::max (std::fabs (pl), std::fabs (pr)) < 5.0e-4f) dryGain.reset (1.0f);
+            }
+            const float dg = dryGain.process (wantLoop ? 1.0f : 0.0f) * (1.0f - lgLive);
             float l = 0.0f, r = 0.0f;
-            if (dg > 0.0f) dryReader.process (loopView, Td * spbR, loopRate, fade, l, r);
+            if (dg > 0.0f && haveLoop) dryReader.process (loopView, Td * spbR, loopRate, fade, l, r);
             else if (! dryReader.isSilent()) dryReader.reset();
-            dl = loopDryDelay[0].process (l * dg, harmLatency);
-            dr = loopDryDelay[1].process (r * dg, harmLatency);
+            l = l * dg + inLine[0].tap (kReaderLookahead) * lgLive;
+            r = r * dg + inLine[1].tap (kReaderLookahead) * lgLive;
+            dl = dryDelay[0].process (l, harmLatency);
+            dr = dryDelay[1].process (r, harmLatency);
         }
 
         // ---- harmony
@@ -649,12 +667,23 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
             wl += tl * dlv + rl * rlv; wr += tr * dlv + rr * rlv;
         }
 
-        // ---- output section
+        // ---- output section. The filters always run (their state stays warm) and
+        // are blended in, so switching them on or sweeping them cannot click.
         {
+            if ((outUpdateCounter++ & 15) == 0)
+            {
+                hpSm += 0.12f * (hpTarget - hpSm); lpSm += 0.12f * (lpTarget - lpSm);
+                qSm += 0.12f * (qTarget - qSm); tiltSm += 0.12f * (tiltTarget - tiltSm);
+                for (int c = 0; c < 2; ++c) { outHp[c].set (sr, hpSm, qSm); outLp[c].set (sr, lpSm, qSm); }
+                tilt.set (sr, tiltSm);
+            }
+            const float hm = hpMix.process (hpTarget > 21.0f ? 1.0f : 0.0f), lm = lpMix.process (lpTarget < 19900.0f ? 1.0f : 0.0f);
             float lp, bp, hp;
-            if (lastHp > 21.0f) { outHp[0].process (wl, lp, bp, hp); wl = hp; outHp[1].process (wr, lp, bp, hp); wr = hp; }
-            if (lastLp < 19900.0f) { outLp[0].process (wl, lp, bp, hp); wl = lp; outLp[1].process (wr, lp, bp, hp); wr = lp; }
-            if (lastTilt != 0.0f) tilt.process (wl, wr);
+            outHp[0].process (wl, lp, bp, hp); wl += hm * (hp - wl);
+            outHp[1].process (wr, lp, bp, hp); wr += hm * (hp - wr);
+            outLp[0].process (wl, lp, bp, hp); wl += lm * (lp - wl);
+            outLp[1].process (wr, lp, bp, hp); wr += lm * (lp - wr);
+            tilt.process (wl, wr);
             const float w = widthSm.next();
             const float mid = 0.5f * (wl + wr), side = 0.5f * (wl - wr) * w;
             wl = mid + side; wr = mid - side;
@@ -663,7 +692,7 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         const float gOut = gainSm.next();
         float ol = (dl + mix * (wl - dl)) * gOut;
         float orr = (dr + mix * (wr - dr)) * gOut;
-        if (p.inputMonitor && ! live) { ol += inDl; orr += inDr; }
+        if (p.inputMonitor && ! live) { ol += inLine[0].tap (postDelay); orr += inLine[1].tap (postDelay); }
 
         // limiter (always in the path so latency is constant)
         {
@@ -673,9 +702,8 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
         }
 
         // ---- bypass crossfade against the latency-matched input
-        const float byl = bypassDelay[0].process (xl, latency), byr = bypassDelay[1].process (xr, latency);
-        const float by = bypassSm.next();
-        if (by > 0.0f) { ol += by * (byl - ol); orr += by * (byr - orr); }
+        const float by = bypassFade.process (p.bypass ? 1.0f : 0.0f);
+        if (by > 0.0f) { ol += by * (inLine[0].tap (latency) - ol); orr += by * (inLine[1].tap (latency) - orr); }
 
         outL[n] = ol; outR[n] = orr;
         visPeakL = std::max (visPeakL, std::fabs (ol)); visPeakR = std::max (visPeakR, std::fabs (orr));
@@ -684,24 +712,26 @@ void Engine::process (const float* inL, const float* inR, float* outL, float* ou
     }
 
     // ---- publish visual state
+    visual.ringWritten.store (-1, std::memory_order_relaxed);   // marks the pair below as mid-update
     visual.beat.store (beat, std::memory_order_relaxed);
+    visual.ringWritten.store (ring.written(), std::memory_order_release);
     visual.bpm.store (bpm, std::memory_order_relaxed);
     visual.playing.store (playingNow, std::memory_order_relaxed);
     {
         const SliceSet& slc = activeSlices (live);
         const double lb = live ? (double) slc.loopBeats : (haveLoop ? loop->beats : 4.0);
         if (live)
-            visual.loopPos.store ((float) (((double) (ring.written() - 1) - loopReader.currentPosition()) / spbNow), std::memory_order_relaxed);
+            visual.loopPos.store ((float) (((double) (ring.written() - 1) - liveReader.currentPosition()) / spbNow), std::memory_order_relaxed);
         else
             visual.loopPos.store ((float) floorMod (loopReader.currentPosition() / spbR, lb), std::memory_order_relaxed);
-        visual.loopGain.store (loopGain.y, std::memory_order_relaxed);
-        visual.playRate.store ((float) (loopReader.currentRate() / (live ? 1.0 : std::max (1.0e-9, loopRate))), std::memory_order_relaxed);
+        visual.loopGain.store (live ? sourceFade.y : loopGain.y, std::memory_order_relaxed);
+        visual.playRate.store ((float) (live ? liveReader.currentRate() : loopReader.currentRate() / std::max (1.0e-9, loopRate)), std::memory_order_relaxed);
         for (int i = 0; i < kMaxSliceVoices; ++i)
         {
             const auto& v = voices[i];
             float pos = -1.0f;
             if (v.active && ! v.releasing)
-                pos = live ? (float) (((double) (ring.written() - 1) - v.reader.currentPosition()) / spbNow)
+                pos = v.live ? (float) (((double) (ring.written() - 1) - v.reader.currentPosition()) / spbNow)
                            : (float) floorMod (v.reader.currentPosition() / spbR, lb);
             visual.voicePos[i].store (pos, std::memory_order_relaxed);
         }

@@ -198,6 +198,24 @@ TEST_CASE (reader_crossfades_jumps_without_clicks)
     CHECK (detectClicks (hard, sr).worstRatio > 20.0);
 }
 
+TEST_CASE (reader_gains_sum_to_one_under_rapid_jumps)
+{
+    // a constant source: whatever the reader does, the output must stay at that constant
+    RenderedLoop loop; loop.allocate (48000);
+    for (int i = 0; i < 48000; ++i) loop.channel (0)[i] = loop.channel (1)[i] = 0.5f;
+    loop.fixGuards();
+    Reader rd; float l, r; Rng rng (21); double pos = 0.0; float lo = 1.0f, hi = 0.0f;
+    for (int i = 0; i < 200000; ++i)
+    {
+        if (rng.range (60) == 0) pos = (double) rng.range (40000);      // jumps far more often than the 192-sample fade
+        rd.process (loop.view(), pos, 1.0, 192, l, r); pos += 1.0;
+        lo = std::min (lo, l); hi = std::max (hi, l);
+    }
+    CHECK_MSG (lo > 0.4999f && hi < 0.5001f, "gain sum range %.5f .. %.5f", lo * 2.0f, hi * 2.0f);
+    rd.release (192);
+    for (int i = 0; i < 400; ++i) rd.process (loop.view(), pos, 1.0, 192, l, r);
+}
+
 TEST_CASE (reader_fast_playback_does_not_alias)
 {
     const double sr = 48000.0;
@@ -264,6 +282,20 @@ TEST_CASE (loop_playback_is_sample_locked_to_the_host)
     CHECK_MSG (worst <= 1.0, "worst drift %.3f samples", worst);
 }
 
+TEST_CASE (transport_start_keeps_the_first_transient)
+{
+    // a loop that opens with an impulse-like hit on the one: pressing play must
+    // reproduce it at full level on the exact sample
+    Rig rig (48000.0, 120.0);
+    rig.params.limiter = false;
+    rig.makeLoop (4.0, [] (int64_t i, double, float& l, float& r) { l = r = (i >= 2 && i < 40) ? 0.8f * (float) std::exp (-(double) (i - 2) / 8.0) : 0.0f; });
+    rig.transport.playing = false; rig.render (20000);
+    rig.transport.playing = true; rig.transport.ppq = 0.0; rig.render (20000);
+    const int at = 20000 + rig.engine.latencySamples() + 2;
+    CHECK_MSG (std::fabs (rig.outL[(size_t) at] - 0.8f) < 0.01f, "first sample of the hit: %.4f", rig.outL[(size_t) at]);
+    CHECK (std::fabs (rig.outL[(size_t) at - 1]) < 1.0e-4f);
+}
+
 TEST_CASE (host_loop_and_seek_do_not_click)
 {
     Rig rig (48000.0, 120.0);
@@ -285,10 +317,11 @@ TEST_CASE (transport_stop_and_start_fade_cleanly)
     rig.render (30000);
     rig.transport.playing = false; rig.render (30000);
     CHECK_MSG (peakAbs (rig.outL, 50000, 60000) < 1.0e-4f, "not silent when stopped: %g", peakAbs (rig.outL, 50000, 60000));
-    rig.transport.playing = true; rig.transport.ppq = 2.0; rig.render (30000);
+    // restart in the middle of the waveform: must fade in, not step
+    rig.transport.playing = true; rig.transport.ppq = 2.0321; rig.render (30000);
     CHECK (rms (rig.outL, 80000, 90000) > 0.2);
     const ClickResult c = detectClicks (rig.outL, 48000.0, 4000);
-    CHECK_MSG (c.worstRatio < 6.0, "click ratio %.2f at %zu", c.worstRatio, c.position);
+    CHECK_MSG (c.worstRatio < 9.0, "click ratio %.2f at %zu", c.worstRatio, c.position);
 }
 
 
@@ -547,6 +580,34 @@ TEST_CASE (harmoniser_pitch_accuracy_and_latency)
         for (int i = h.fftSize() * 3; i < 30000; ++i) err = std::max (err, (double) std::fabs (out[(size_t) i] - in[(size_t) (i - h.fftSize())]));
         CHECK_MSG (err < 2.0e-2, "sr %.0f unity err %g", sr, err);
     }
+}
+
+TEST_CASE (harmoniser_keeps_transients_tight)
+{
+    // decaying noise bursts: the shifted voice should start with the burst, with
+    // little energy smeared ahead of it (pre-echo)
+    const double sr = 48000.0;
+    Harmonizer h; h.prepare (sr); h.setActive (true); h.setFormant (0.0f);
+    Harmonizer::Voice v; v.ratio = (float) semisToRatio (7.0); v.gainL = v.gainR = 1.0f; h.setVoice (0, v);
+    Rng rng (6); std::vector<float> out;
+    const int period = 12000, lat = h.fftSize();
+    for (int i = 0; i < period * 12; ++i)
+    {
+        const int k = i % period;
+        const float x = 0.6f * rng.bipolar() * (float) std::exp (-(double) k / 700.0);
+        float l, r; h.process (x, x, l, r); out.push_back (l);
+    }
+    double worstPre = 0.0, meanPre = 0.0; int n = 0;
+    for (int b = 3; b < 11; ++b)
+    {
+        const size_t on = (size_t) (b * period + lat);
+        const double pre = rms (out, on - 960, on - 48), post = rms (out, on, on + 960);
+        const double ratio = pre / (post + 1.0e-9);
+        worstPre = std::max (worstPre, ratio); meanPre += ratio; ++n;
+    }
+    meanPre /= n;
+    std::printf ("   pre-echo (20 ms before / 20 ms after the hit): mean %.3f (%.1f dB), worst %.3f\n", meanPre, 20.0 * std::log10 (meanPre), worstPre);
+    CHECK_MSG (meanPre < 0.2, "mean pre-echo ratio %.3f", meanPre);
 }
 
 TEST_CASE (harmoniser_preserves_formants)

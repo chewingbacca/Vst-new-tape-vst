@@ -57,10 +57,39 @@ time / volume / sequence slots and momentary FX).
 
 ## Status
 - [x] Pass-through plugin builds (VST3 + Standalone)
-- [ ] DSP core, sampler, glitch engine, harmony, output
-- [ ] UI, presets, demo loops
-- [ ] Harness, unit tests, pluginval
-- [ ] README
+- [x] DSP core (Source/dsp, JUCE-free): Reader, Sequencer, time maps, Harmonizer,
+      StepFx, Analysis, Stretch, DemoLoops, Engine
+- [x] Plugin layer (Source/plugin): Parameters, LoopManager (background thread),
+      PatternBank (+ standard curve library), Presets (43 factory), Processor, state
+- [x] Unit tests (tests/dsp_tests.cpp, run with scripts/dsptest.sh) and render
+      harness (tests/render_harness.cpp -> build/renders/*.wav + report.txt)
+- [ ] UI (Source/ui) — placeholder editor only so far
+- [ ] pluginval, README
+
+## Lessons learned (keep these invariants)
+- Every gain that moves must be C1 smooth: use `Fader` (ramp + 2 poles) or
+  `LinearSmoother` (2 poles). A linear ramp corner or a one-pole step start
+  measures as a tick on smooth material.
+- Reader: per-tap gains are smooth ramps and are *normalised to sum to 1*;
+  otherwise jumps closer than the fade time dip or kink. Starting from silence
+  is instant; fade-ins belong to the caller (engine loopGain: instant when the
+  start sample is ~silent, else 1.2 ms).
+- A change of playback *speed* is treated like a jump (crossfade), not followed.
+- All maps are evaluated on the delayed clock Td (= T - kReaderLookahead); post
+  effects on Tp (= T - lookahead - harmoniser latency). T has a +1e-9 beat bias
+  so grid decisions do not depend on host rounding (=> block-size independent).
+- Output filters always run and are blended in; never switch a filter in/out.
+- Harmoniser: pre-echo guard (output may not exceed 4x the aligned input
+  envelope) took pre-echo on hits from -14 dB to -68 dB.
+- Macro injection (macro > 0.5) ignores lane locks by design; Chaos respects them.
+- Tests that need the loop: call LoopManager::waitUntilReady (2 worker passes).
+
+## Measured (48 kHz unless noted)
+- CPU: mean ~2 %, worst ~5 % of one core over 114 preset renders (512 block).
+- Latency: 2160 samples @48k (40 reader + 2048 harmoniser + 72 limiter); null test exact.
+- Timing: beats land within 1-2 samples (Tape/Beats stretch), 0.8 ms (Tonal).
+- Harmony pitch: +-0.00 cents on sine tests at 44.1k and 96k.
+- Click audit over all presets: worst score 4.3 (threshold 9; hard cut > 100).
 
 ## Research notes (reference products)
 Gross Beat: 2-bar buffer, 36+36 slots, offset-behind-realtime curve, trig sync,

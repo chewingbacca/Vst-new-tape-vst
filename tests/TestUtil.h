@@ -76,32 +76,41 @@ inline double dcOffset (const std::vector<float>& v)
     return v.empty() ? 0.0 : s / (double) v.size();
 }
 
-// Click detector. A click is a sample whose high-passed (2nd difference) value
-// towers over the local level of the same quantity. Returns the worst ratio and
-// its position. Works on tonal or band-limited material; for noisy drums use
-// compareAtBoundaries style checks instead.
+// Click detector. Works on the second difference d2 of the signal, which is
+// tiny for smooth audio and spikes at a discontinuity or a kink. Two views:
+//   isolated: d2 against its immediate neighbours (a few samples away) — catches
+//             kinks and jumps even inside loud, bright material;
+//   wide:     d2 against the typical d2 of the sounding parts of the signal —
+//             catches band-limited steps whose energy is spread over a few samples.
+// The score is max (isolated, wide / 4). Smooth audio scores ~1-3, a kink from a
+// badly shaped fade ~10+, a hard cut 100+.
 struct ClickResult { double worstRatio = 0.0; size_t position = 0; double worstValue = 0.0; };
 inline ClickResult detectClicks (const std::vector<float>& v, double sampleRate, size_t from = 0, size_t to = SIZE_MAX)
 {
     ClickResult res;
     to = std::min (to, v.size());
-    if (to < from + 64) return res;
+    if (to < from + 256) return res;
     const size_t n = to - from;
     std::vector<float> d2 (n, 0.0f);
-    for (size_t i = 2; i < n; ++i) d2[i] = std::fabs (v[from + i] - 2.0f * v[from + i - 1] + v[from + i - 2]);
-    // local reference: mean |d2| over +-10 ms, excluding the +-0.3 ms around the sample
-    const int w = std::max (32, (int) (0.010 * sampleRate)), ex = std::max (3, (int) (0.0003 * sampleRate));
+    double gsum = 0.0; size_t gcount = 0;
+    for (size_t i = 2; i < n; ++i)
+    {
+        d2[i] = std::fabs (v[from + i] - 2.0f * v[from + i - 1] + v[from + i - 2]);
+        if (std::fabs (v[from + i]) > 1.0e-3f) { gsum += d2[i]; ++gcount; }
+    }
+    const double gm = gcount > 0 ? gsum / (double) gcount : 0.0;
     std::vector<double> prefix (n + 1, 0.0);
     for (size_t i = 0; i < n; ++i) prefix[i + 1] = prefix[i] + d2[i];
-    double globalMean = prefix[n] / (double) n;
-    for (size_t i = (size_t) w; i + (size_t) w < n; ++i)
+    auto mean = [&] (size_t a, size_t b) { return (prefix[b] - prefix[a]) / (double) (b - a); };   // [a, b)
+    const size_t w = (size_t) std::max (64, (int) (0.010 * sampleRate));
+    const size_t nearIn = 4, nearOut = (size_t) std::max (24, (int) (0.0005 * sampleRate));
+    for (size_t i = w; i + w < n; ++i)
     {
-        const double total = prefix[i + (size_t) w] - prefix[i - (size_t) w];
-        const double mid = prefix[i + (size_t) ex + 1] - prefix[i - (size_t) ex];
-        const double ref = (total - mid) / (double) (2 * w - 2 * ex - 1);
-        const double floor_ = std::max (ref, globalMean * 0.05) + 1.0e-7;
-        const double ratio = d2[i] / floor_;
-        if (ratio > res.worstRatio) { res.worstRatio = ratio; res.position = from + i; res.worstValue = d2[i]; }
+        const double neighbours = 0.5 * (mean (i - nearOut, i - nearIn + 1) + mean (i + nearIn, i + nearOut + 1));
+        const double iso = d2[i] / (neighbours + 0.25 * gm + 1.0e-7);
+        const double wide = d2[i] / (std::max (mean (i - w, i + w), gm) + 1.0e-7);
+        const double score = std::max (iso, wide * 0.25);
+        if (score > res.worstRatio) { res.worstRatio = score; res.position = from + i; res.worstValue = d2[i]; }
     }
     return res;
 }

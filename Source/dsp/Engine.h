@@ -73,6 +73,7 @@ inline const char* delayDivName (int i)
 struct VisualState
 {
     std::atomic<double> beat { 0.0 };
+    std::atomic<int64_t> ringWritten { 0 };          // ring write index matching `beat`
     std::atomic<float> loopPos { 0.0f };            // beats within the loop (or beats behind, live)
     std::atomic<float> loopGain { 0.0f };
     std::atomic<float> voicePos[kMaxSliceVoices];   // beats within loop, <0 = idle
@@ -121,6 +122,8 @@ public:
                   const MidiEvent* midi, int numMidi);
 
     VisualState visual;
+    // test hook: when set, receives (reader position, warp gain) for every sample
+    std::vector<std::pair<double, float>>* debugTrace = nullptr;
 
     // sample position (ring absolute index) at the start of a bar that ended most
     // recently, for capture. Returns false if not enough has been recorded.
@@ -136,7 +139,7 @@ private:
         double warpAtStart = 0.0;  // warped time at trigger
         double endLen = 0.0;       // one-shot length in beats (0 = until note off)
         float velocity = 1.0f;
-        bool fresh = false;
+        bool fresh = false, live = false;
         Reader reader;
         Fader gain;
     };
@@ -189,14 +192,14 @@ private:
 
     // sources and readers
     LiveRing ring;
-    Reader loopReader, dryReader;
+    Reader loopReader, liveReader, dryReader;
     SliceVoice voices[kMaxSliceVoices];
-    Fader loopGain, warpGain, dryGain;
+    Fader loopGain, warpGain, dryGain, bypassFade, sourceFade;
     int lastChopSlice = -1;
 
     // harmony
     Harmonizer harm;
-    DelayLine mainDelay[2], inDelay[2], loopDryDelay[2], bypassDelay[2];
+    DelayLine mainDelay[2], inLine[2], dryDelay[2];
     Fader harmEnv;
     float harmVoiceGain[kNumHarmVoices] = {};
     int harmUpdateCounter = 0;
@@ -215,8 +218,11 @@ private:
     Svf outHp[2], outLp[2];
     TiltEq tilt;
     Limiter limiter;
-    LinearSmoother mixSm, widthSm, gainSm, volDepthSm, warpDepthSm, bypassSm, delayLevelSm, reverbLevelSm, limiterSm;
-    float lastHp = -1, lastLp = -1, lastQ = -1, lastTilt = -99;
+    LinearSmoother mixSm, widthSm, gainSm, volDepthSm, warpDepthSm, delayLevelSm, reverbLevelSm, limiterSm;
+    Fader hpMix, lpMix;
+    float hpTarget = 20.0f, lpTarget = 20000.0f, qTarget = 0.7f, tiltTarget = 0.0f;
+    float hpSm = 20.0f, lpSm = 20000.0f, qSm = 0.7f, tiltSm = 0.0f;
+    int outUpdateCounter = 0;
     float peakL = 0.0f, peakR = 0.0f, inPeakHold = 0.0f;
 };
 } // namespace splinter

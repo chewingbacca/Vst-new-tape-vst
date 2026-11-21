@@ -174,72 +174,92 @@ private:
 };
 
 // ---------------------------------------------------------------- granular freeze
+// Captures the audio at the start of a gesture and sustains it with overlapping
+// Hann grains. Two units alternate, so a new freeze crossfades out of the old one.
 class GranularFreeze
 {
 public:
     void prepare (double sampleRate)
     {
         sr = sampleRate;
-        cap = (int) (sampleRate * 1.2) + 16;
-        for (auto& b : buf) b.assign ((size_t) cap, 0.0f);
+        cap = (int) (sampleRate * 0.85) + 16;
+        for (auto& u : units)
+        {
+            for (auto& b : u.buf) b.assign ((size_t) cap, 0.0f);
+            u.mix.setTime (sampleRate, 10.0);
+        }
         reset();
     }
-    void reset() { recorded = 0; running = false; for (auto& g : grains) g.active = false; untilNext = 0; }
+    void reset() { for (auto& u : units) { u.recorded = 0; u.running = false; for (auto& g : u.grains) g.active = false; u.untilNext = 0; u.mix.reset (0.0f); } active = 0; }
     // Call when a freeze gesture starts.
     void trigger (float grainSeconds, uint32_t seed)
     {
-        grainLen = clampv ((int) (grainSeconds * sr), 64, cap / 2);
-        recorded = 0; running = true; rng = Rng (seed | 1U);
-        for (auto& g : grains) g.active = false;
-        untilNext = grainLen; // first grain starts once one grain of audio exists
+        units[active].running = false;
+        active ^= 1;
+        Unit& u = units[active];
+        u.grainLen = clampv ((int) (grainSeconds * sr), 64, cap / 2);
+        u.recorded = 0; u.running = true; u.rng = Rng (seed | 1U);
+        for (auto& g : u.grains) g.active = false;
+        u.mix.reset (0.0f);
+        u.untilNext = u.grainLen;        // the first grain starts once one grain of audio exists
     }
-    void stop() { running = false; }
-    inline void process (float& l, float& r, float amount)
+    void stop() { for (auto& u : units) u.running = false; }
+    inline void process (float& l, float& r, float)
     {
-        if (! running && amount <= 0.0f) return;
-        if (running && recorded < 2 * grainLen && recorded < cap) { buf[0][(size_t) recorded] = l; buf[1][(size_t) recorded] = r; ++recorded; }
-        if (running && --untilNext <= 0)
+        float wetSum = 0.0f, gl = 0.0f, gr = 0.0f;
+        for (auto& u : units)
         {
-            untilNext = grainLen / 2;
-            for (auto& g : grains)
-                if (! g.active)
-                {
-                    const int room = std::max (0, recorded - grainLen);
-                    g.start = room > 0 ? rng.range (room + 1) : 0;
-                    g.pos = 0; g.active = true; g.reverse = false;
-                    g.pan = 0.5f + 0.35f * rng.bipolar();
-                    break;
-                }
+            if (! u.running && u.mix.y <= 0.0f) continue;
+            if (u.running && u.recorded < 2 * u.grainLen && u.recorded < cap) { u.buf[0][(size_t) u.recorded] = l; u.buf[1][(size_t) u.recorded] = r; ++u.recorded; }
+            // keep spawning grains while fading out, so the tail is not cut short
+            if (--u.untilNext <= 0)
+            {
+                u.untilNext = u.grainLen / 2;
+                if (u.recorded >= u.grainLen)
+                    for (auto& g : u.grains)
+                        if (! g.active)
+                        {
+                            const int room = std::max (0, u.recorded - u.grainLen);
+                            g.start = room > 0 ? u.rng.range (room + 1) : 0;
+                            g.pos = 0; g.active = true;
+                            g.pan = 0.5f + 0.35f * u.rng.bipolar();
+                            break;
+                        }
+            }
+            float ul = 0.0f, ur = 0.0f; bool any = false;
+            const float invLen = 1.0f / (float) u.grainLen;
+            for (auto& g : u.grains)
+            {
+                if (! g.active) continue;
+                any = true;
+                const float w = 0.5f - 0.5f * std::cos ((float) kTwoPi * ((float) g.pos + 0.5f) * invLen);
+                const int i = std::min (g.start + g.pos, cap - 1);
+                ul += w * u.buf[0][(size_t) i] * (1.0f - (g.pan - 0.5f) * 0.6f);
+                ur += w * u.buf[1][(size_t) i] * (1.0f + (g.pan - 0.5f) * 0.6f);
+                if (++g.pos >= u.grainLen) g.active = false;
+            }
+            const float w = u.mix.process ((u.running && any) ? 1.0f : 0.0f);
+            wetSum += w; gl += w * ul; gr += w * ur;
+            if (! u.running && w <= 0.0f) for (auto& g : u.grains) g.active = false;
         }
-        float gl = 0.0f, gr = 0.0f;
-        bool any = false;
-        const float invLen = 1.0f / (float) grainLen;
-        for (auto& g : grains)
-        {
-            if (! g.active) continue;
-            any = true;
-            const float w = 0.5f - 0.5f * std::cos ((float) kTwoPi * ((float) g.pos + 0.5f) * invLen);
-            const int i = std::min (g.start + g.pos, cap - 1);
-            const float sl = buf[0][(size_t) i], sr2 = buf[1][(size_t) i];
-            gl += w * (sl * (1.0f - (g.pan - 0.5f) * 0.6f));
-            gr += w * (sr2 * (1.0f + (g.pan - 0.5f) * 0.6f));
-            if (++g.pos >= grainLen) g.active = false;
-        }
-        // until the first grain exists the dry signal passes; then crossfade over
-        const float wet = any ? amount * frozenMix : 0.0f;
-        frozenMix += ((any ? 1.0f : 0.0f) - frozenMix) * 0.004f;
-        l += wet * (gl - l); r += wet * (gr - r);
-        if (! running && ! any) frozenMix = 0.0f;
+        if (wetSum <= 0.0f) return;
+        const float dry = std::max (0.0f, 1.0f - wetSum), norm = wetSum > 1.0f ? 1.0f / wetSum : 1.0f;
+        l = l * dry + gl * norm; r = r * dry + gr * norm;
     }
 private:
-    struct Grain { int start = 0, pos = 0; float pan = 0.5f; bool active = false, reverse = false; };
+    struct Grain { int start = 0, pos = 0; float pan = 0.5f; bool active = false; };
+    struct Unit
+    {
+        std::vector<float> buf[2];
+        Grain grains[4];
+        Rng rng;
+        Fader mix;
+        int recorded = 0, grainLen = 2048, untilNext = 0;
+        bool running = false;
+    };
     double sr = 48000.0;
-    std::vector<float> buf[2];
-    Grain grains[4];
-    Rng rng;
-    int cap = 1, recorded = 0, grainLen = 2048, untilNext = 0;
-    bool running = false;
-    float frozenMix = 0.0f;
+    Unit units[2];
+    int cap = 1, active = 0;
 };
 
 // ---------------------------------------------------------------- delay throw
@@ -465,6 +485,9 @@ public:
         w = (w + 1) & (size - 1);
         return y;
     }
+    // multi-tap use: write once per sample, then read any number of delays
+    inline void write (float x) { buf[(size_t) w] = x; w = (w + 1) & (size - 1); }
+    inline float tap (int delay) const { return buf[(size_t) ((w - 1 - delay) & (size - 1))]; }
 private:
     std::vector<float> buf;
     int size = 2, w = 0;

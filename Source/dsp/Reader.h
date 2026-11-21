@@ -127,23 +127,25 @@ inline void readSource (const SourceView& s, double x, double absRate, float& ou
 class Reader
 {
 public:
-    static constexpr int kMaxTaps = 4;
+    static constexpr int kMaxTaps = 6;
 
     void reset() { for (auto& t : taps) t = Tap(); cur = -1; }
-    bool isSilent() const { return cur < 0; }
-    double currentPosition() const { return cur >= 0 ? taps[cur].x : 0.0; }
+    bool isSilent() const
+    {
+        if (cur >= 0) return false;
+        for (auto& t : taps) if (t.active) return false;
+        return true;
+    }
+    double currentPosition() const { return cur >= 0 ? taps[cur].x : lastPos; }
     double currentRate() const { return cur >= 0 ? taps[cur].dx : 0.0; }
 
-    // Fade everything out (voice release); the reader goes silent afterwards.
-    void release (int fadeSamples)
-    {
-        if (cur < 0) return;
-        taps[cur].step = -1.0f / (float) std::max (1, fadeSamples);
-        cur = -1;
-    }
+    // Let everything that is sounding fade away; the next process() call starts
+    // a new tap and crossfades into it.
+    void release (int fadeSamples) { cur = -1; setFade (fadeSamples); }
 
     // Render one sample reading at `target` (unwrapped source samples).
     // nominalRate is the expected playback speed, used when a tap starts.
+    // Starting from silence is instantaneous: fade-ins belong to the caller.
     inline void process (const SourceView& src, double target, double nominalRate, int fadeSamples, float& outL, float& outR)
     {
         outL = outR = 0.0f;
@@ -157,27 +159,34 @@ public:
             Tap& c = taps[cur];
             const double delta = target - c.x;
             const double err = std::fabs (delta - c.dx);
-            // a jump in position *or* an abrupt change of speed (which would be a
-            // kink in the waveform) is bridged by a crossfade
             if (c.fresh && std::fabs (delta) <= 2.0 * kSincMaxStretch)
             {
                 c.fresh = false; c.dx = delta; c.x = target;   // first step tells us the real speed
             }
+            // a jump in position *or* an abrupt change of speed (which would be a
+            // kink in the waveform) is bridged by a crossfade
             else if (err > 0.05 * std::max (1.0, std::fabs (c.dx)))
             {
-                c.step = -1.0f / (float) std::max (1, fadeSamples);
                 c.dx = clampv (c.dx, -(double) kSincMaxStretch, (double) kSincMaxStretch);
                 startTap (target, nominalRate, fadeSamples);
             }
             else { c.dx = delta; c.x = target; }
         }
+        lastPos = target;
 
+        // Every tap has its own gain: a constant-rate ramp towards 1 (newest tap)
+        // or 0 (the others), rounded by a one-pole so reversing a fade half way is
+        // still smooth. The gains are then normalised to sum to one, so a burst of
+        // jumps closer together than the fade time neither dips nor bumps.
+        float sum = 0.0f;
         for (int i = 0; i < kMaxTaps; ++i)
         {
             Tap& t = taps[i];
             if (! t.active) continue;
-            if (i != cur)
+            if (i == cur) t.lin = std::min (1.0f, t.lin + step);
+            else
             {
+                t.lin = std::max (0.0f, t.lin - step);
                 t.x += t.dx;
                 if (src.bounded)
                 {
@@ -185,12 +194,19 @@ public:
                     if (t.x < src.lo) { t.x = src.lo; t.dx = 0.0; }
                 }
             }
-            t.phase += t.step;
-            if (t.phase >= 1.0f) { t.phase = 1.0f; t.step = 0.0f; }
-            if (t.phase <= 0.0f) { t.active = false; continue; }
-            const float g = t.phase * t.phase * (3.0f - 2.0f * t.phase);
+            t.y += pole * (t.lin - t.y);
+            if (i != cur && t.lin <= 0.0f && t.y < 1.0e-5f) { t.active = false; continue; }
+            sum += t.y;
+        }
+        if (sum <= 1.0e-9f) return;
+        const float norm = cur >= 0 ? 1.0f / sum : 1.0f;
+        for (int i = 0; i < kMaxTaps; ++i)
+        {
+            const Tap& t = taps[i];
+            if (! t.active) continue;
             float l, r;
             readSource (src, t.x, std::fabs (t.dx), l, r);
+            const float g = t.y * norm;
             outL += g * l; outR += g * r;
         }
     }
@@ -199,28 +215,39 @@ private:
     struct Tap
     {
         double x = 0.0, dx = 1.0;
-        float phase = 0.0f, step = 0.0f;
+        float lin = 0.0f, y = 0.0f;
         bool active = false, fresh = false;
     };
     Tap taps[kMaxTaps];
     int cur = -1;
+    float step = 1.0f / 192.0f, pole = 0.1f;
+    int fadeSet = 0;
+    double lastPos = 0.0;
+
+    void setFade (int fadeSamples)
+    {
+        if (fadeSamples == fadeSet) return;
+        fadeSet = fadeSamples;
+        const float n = (float) std::max (4, fadeSamples);
+        step = 1.0f / (0.8f * n);
+        pole = 1.0f - std::exp (-1.0f / (0.07f * n));
+    }
 
     void startTap (double target, double rate, int fadeSamples)
     {
-        int slot = -1;
-        float quietest = 2.0f;
+        setFade (fadeSamples);
+        int slot = -1; bool anyActive = false;
+        float quietest = 3.0f;
         for (int i = 0; i < kMaxTaps; ++i)
         {
-            if (! taps[i].active) { slot = i; break; }
-            if (i != cur && taps[i].phase < quietest) { quietest = taps[i].phase; slot = i; }
+            if (! taps[i].active) { if (slot < 0 || taps[slot].active) slot = i; continue; }
+            anyActive = true;
+            if ((slot < 0 || taps[slot].active) && taps[i].y < quietest) { quietest = taps[i].y; slot = i; }
         }
-        if (slot < 0) slot = 0;
         Tap& t = taps[slot];
-        const bool wasSilent = ! t.active;
         t.active = true;
+        t.lin = t.y = anyActive ? 0.0f : 1.0f;     // from silence: open immediately
         t.x = target; t.dx = rate; t.fresh = true;
-        t.phase = wasSilent ? 0.0f : 0.0f;
-        t.step = 1.0f / (float) std::max (1, fadeSamples);
         cur = slot;
     }
 };
@@ -240,11 +267,12 @@ public:
 
     inline void write (float l, float r)
     {
-        const int64_t i = writeAbs % length;
+        const int64_t wa = writeAbs.load (std::memory_order_relaxed);
+        const int64_t i = wa % length;
         put (0, i, l); put (1, i, r);
-        ++writeAbs;
+        writeAbs.store (wa + 1, std::memory_order_relaxed);
     }
-    int64_t written() const { return writeAbs; }          // abs index of the next sample to write
+    int64_t written() const { return writeAbs.load (std::memory_order_relaxed); }   // abs index of the next sample to write
     int64_t capacity() const { return length; }
 
     SourceView view() const
@@ -252,8 +280,9 @@ public:
         SourceView v;
         v.ch[0] = data[0].data() + kSourceGuard; v.ch[1] = data[1].data() + kSourceGuard;
         v.length = length; v.bounded = true;
-        v.hi = (double) (writeAbs - 1 - kReaderLookahead);
-        v.lo = (double) (writeAbs - length + kSourceGuard + 4);
+        const int64_t wa = writeAbs.load (std::memory_order_relaxed);
+        v.hi = (double) (wa - 1 - kReaderLookahead);
+        v.lo = (double) (wa - length + kSourceGuard + 4);
         return v;
     }
     float sampleAbs (int ch, int64_t absIndex) const
@@ -264,7 +293,8 @@ public:
 
 private:
     std::vector<float> data[2];
-    int64_t length = 0, writeAbs = 0;
+    int64_t length = 0;
+    std::atomic<int64_t> writeAbs { 0 };
     inline void put (int ch, int64_t i, float v)
     {
         float* d = data[ch].data() + kSourceGuard;

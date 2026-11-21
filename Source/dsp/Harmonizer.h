@@ -42,6 +42,9 @@ public:
         for (auto& r : rot) r.assign ((size_t) half + 1, 0.0f);
         for (auto& r : rotNew) r.assign ((size_t) half + 1, 0.0f);
         lifterLen = clampv ((int) (sampleRate / 650.0), 16, half / 2);
+        envRelease = (float) std::exp (-1.0 / (0.020 * sampleRate));
+        guardUp = (float) (1.0 - std::exp (-1.0 / (0.0003 * sampleRate)));
+        guardDown = (float) (1.0 - std::exp (-1.0 / (0.004 * sampleRate)));
         reset();
     }
 
@@ -50,11 +53,17 @@ public:
         for (auto* v : { &inL, &inR, &outL, &outR, &prevMag, &prevPhase }) std::fill (v->begin(), v->end(), 0.0f);
         for (auto& r : rot) std::fill (r.begin(), r.end(), 0.0f);
         std::fill (std::begin (chroma), std::end (chroma), 0.0f);
-        pos = 0; hopCount = 0; pitchClass = -1; confidence = 0.0f;
+        pos = 0; hopCount = 0; pitchClass = -1; pendingClass = -1; pendingFrames = 0; confidence = 0.0f;
+        envIn = envOut = 0.0f; guard = guard1 = 1.0f;
     }
 
     int fftSize() const { return n; }
-    void setVoice (int i, const Voice& v) { voices[i] = v; }
+    void setVoice (int i, const Voice& v)
+    {
+        voices[i] = v;
+        voiceGainSum = 0.0f;
+        for (auto& vc : voices) voiceGainSum += std::max (vc.gainL, vc.gainR);
+    }
     void setFormant (float amount) { formant = clampv (amount, 0.0f, 1.0f); }
     // While inactive the input history is still tracked but no FFT work is done.
     void setActive (bool a) { active = a; }
@@ -66,6 +75,9 @@ public:
     inline void process (float l, float r, float& oL, float& oR)
     {
         const int ip = (int) (pos & (int64_t) (n - 1));
+        // the sample about to be overwritten is the input from exactly n samples
+        // ago, i.e. time-aligned with what comes out now
+        const float refIn = std::max (std::fabs (inL[(size_t) ip]), std::fabs (inR[(size_t) ip]));
         inL[(size_t) ip] = l; inR[(size_t) ip] = r;
         const int op = (int) (pos & (int64_t) (2 * n - 1));
         oL = outL[(size_t) op]; oR = outR[(size_t) op];
@@ -76,6 +88,19 @@ public:
             hopCount = 0;
             if (active) frame();
         }
+        // Pre-echo guard. A vocoder smears a hit across its whole window, some of
+        // it *ahead* of the hit. The output is not allowed to be much louder than
+        // the aligned input says it should be, which removes that smear while
+        // leaving sustained material alone.
+        envIn = std::max (refIn, envIn * envRelease);
+        const float outAbs = std::max (std::fabs (oL), std::fabs (oR));
+        envOut = std::max (outAbs, envOut * envRelease);
+        const float limit = voiceGainSum * 4.0f * envIn + 1.0e-5f;
+        const float want = envOut > limit ? limit / envOut : 1.0f;
+        const float a = want > guard ? guardUp : guardDown;
+        guard1 += a * (want - guard1);
+        guard += a * (guard1 - guard);            // two poles: the gain itself never kinks
+        oL *= guard; oR *= guard;
     }
 
 private:
@@ -108,6 +133,32 @@ private:
             peakMag = std::max (peakMag, m);
         }
         const bool transient = flux > 0.55f * total && total > 1.0e-3f * (float) n;
+        // Where in the frame does the attack sit? Shifted partials are re-phased
+        // to line up at that sample, which keeps the hit compact after shifting.
+        int onset = 0;
+        if (transient)
+        {
+            const int blk = std::max (16, n / 64);
+            float prevE = 0.0f, bestRise = 0.0f; int bestBlock = 0;
+            for (int b = 0; b * blk < n; ++b)
+            {
+                float e = 0.0f;
+                for (int i = b * blk; i < std::min (n, (b + 1) * blk); ++i)
+                {
+                    const int j = (start + i) & (n - 1);
+                    e += inL[(size_t) j] * inL[(size_t) j] + inR[(size_t) j] * inR[(size_t) j];
+                }
+                const float rise = e - prevE * 1.5f;
+                if (b > 0 && rise > bestRise) { bestRise = rise; bestBlock = b; }
+                prevE = e;
+            }
+            float pk = 0.0f;
+            const int a = bestBlock * blk, bEnd = std::min (n, a + blk);
+            for (int i = a; i < bEnd; ++i) pk = std::max (pk, std::fabs (inL[(size_t) ((start + i) & (n - 1))]) + std::fabs (inR[(size_t) ((start + i) & (n - 1))]));
+            onset = a;
+            for (int i = a; i < bEnd; ++i)
+                if (std::fabs (inL[(size_t) ((start + i) & (n - 1))]) + std::fabs (inR[(size_t) ((start + i) & (n - 1))]) > 0.25f * pk) { onset = i; break; }
+        }
         if (peakMag < 1.0e-7f * (float) n)
         {
             std::copy (mag.begin(), mag.end(), prevMag.begin());
@@ -207,7 +258,7 @@ private:
                 const Peak& pk = peaks[(size_t) p];
                 const float shiftBins = (beta - 1.0f) * pk.freq;
                 const int s = (int) std::lround (shiftBins);
-                float angle = transient ? 0.0f : rv[(size_t) pk.bin] + expectedScale * shiftBins;
+                float angle = transient ? -(float) (kTwoPi / n) * shiftBins * (float) onset : rv[(size_t) pk.bin] + expectedScale * shiftBins;
                 angle -= (float) kTwoPi * std::round (angle / (float) kTwoPi);
                 const float cr = std::cos (angle), ci = std::sin (angle);
                 for (int k = pk.lo; k <= pk.hi; ++k)
@@ -273,8 +324,14 @@ private:
             const float c = chroma[i] * (i == pitchClass ? 1.25f : 1.0f);
             if (c > best) { best = c; bi = i; }
         }
-        confidence = tot > 1.0e-6f && bi >= 0 ? chroma[bi] / tot : 0.0f;
-        pitchClass = confidence > 0.3f ? bi : -1;
+        const float conf = tot > 1.0e-6f && bi >= 0 ? chroma[bi] / tot : 0.0f;
+        const int candidate = conf > 0.3f ? bi : -1;
+        // a change must persist for a few frames before it is believed, so the
+        // harmony does not flicker on ambiguous material
+        if (candidate == pitchClass) { pendingClass = candidate; pendingFrames = 0; }
+        else if (candidate == pendingClass) { if (++pendingFrames >= 4) { pitchClass = candidate; pendingFrames = 0; } }
+        else { pendingClass = candidate; pendingFrames = 1; }
+        confidence = conf;
     }
 
     double sr = 48000.0;
@@ -292,8 +349,9 @@ private:
     bool active = false;
     int64_t pos = 0;
     int hopCount = 0;
+    float envIn = 0.0f, envOut = 0.0f, guard = 1.0f, guard1 = 1.0f, envRelease = 0.99f, guardUp = 0.1f, guardDown = 0.01f, voiceGainSum = 0.0f;
     float chroma[12] = {};
-    int pitchClass = -1;
+    int pitchClass = -1, pendingClass = -1, pendingFrames = 0;
     float confidence = 0.0f;
 };
 } // namespace splinter

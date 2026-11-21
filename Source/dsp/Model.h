@@ -34,7 +34,7 @@ inline const char* laneId (int lane)
 // Number of meaningful "variation" values per lane (0 always = lane default).
 inline int laneVarCount (int lane)
 {
-    static const int counts[kNumLanes] = { kMaxSlices + 1, 10, 3, 4, 15, 5, 9, 9, 7, 5, 6, 4, 9 };
+    static const int counts[kNumLanes] = { kMaxSlices + 1, 10, 1, 4, 15, 5, 9, 9, 7, 5, 7, 4, 9 };
     return counts[clampv (lane, 0, kNumLanes - 1)];
 }
 

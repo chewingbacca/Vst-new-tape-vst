@@ -47,24 +47,26 @@ struct Rng
 };
 
 // ---------------------------------------------------------------- smoothing
-// Linear ramp to a target over a fixed time; cheap and click free.
+// Parameter smoother: two cascaded one-poles, so the value glides to its target
+// with a continuous slope (a linear ramp has a corner at each end, and a corner
+// in a gain is a faint tick on smooth material).
 struct LinearSmoother
 {
-    float current = 0.0f, target = 0.0f, step = 0.0f;
-    int remaining = 0, rampSamples = 64;
-    void setRampSamples (int n) { rampSamples = std::max (1, n); }
-    void reset (float v) { current = target = v; remaining = 0; step = 0.0f; }
-    void setTarget (float v)
-    {
-        if (v == target) return;
-        target = v; remaining = rampSamples; step = (target - current) / (float) remaining;
-    }
+    float current = 0.0f, target = 0.0f, y1 = 0.0f, a = 1.0f;
+    void setRampSamples (int n) { a = 1.0f - std::exp (-1.0f / (0.22f * (float) std::max (1, n))); }
+    void reset (float v) { current = target = y1 = v; }
+    void setTarget (float v) { target = v; }
     inline float next()
     {
-        if (remaining > 0) { current += step; if (--remaining == 0) current = target; }
+        if (current != target)
+        {
+            y1 += a * (target - y1);
+            current += a * (y1 - current);
+            if (std::fabs (current - target) < 1.0e-6f && std::fabs (y1 - target) < 1.0e-6f) current = y1 = target;
+        }
         return current;
     }
-    bool isSmoothing() const { return remaining > 0; }
+    bool isSmoothing() const { return current != target; }
 };
 
 // One-pole smoother with separate attack / release coefficients.
@@ -107,20 +109,23 @@ struct SlewLin
 // corners, so fades have no slope discontinuity (which would be a faint click).
 struct Fader
 {
-    float lin = 0.0f, y = 0.0f, maxStep = 1.0f, a = 1.0f;
-    void setTime (double sampleRate, double ms)
+    float lin = 0.0f, y1 = 0.0f, y = 0.0f, stepUp = 1.0f, stepDown = 1.0f, aUp = 1.0f, aDown = 1.0f;
+    void setTime (double sampleRate, double ms) { setTimes (sampleRate, ms, ms); }
+    void setTimes (double sampleRate, double upMs, double downMs)
     {
-        const double n = std::max (2.0, 0.001 * ms * sampleRate);
-        maxStep = (float) (1.0 / (0.75 * n));
-        a = (float) (1.0 - std::exp (-1.0 / (0.08 * n)));
+        const double nu = std::max (2.0, 0.001 * upMs * sampleRate), nd = std::max (2.0, 0.001 * downMs * sampleRate);
+        stepUp = (float) (1.0 / (0.7 * nu)); aUp = (float) (1.0 - std::exp (-1.0 / (0.06 * nu)));
+        stepDown = (float) (1.0 / (0.7 * nd)); aDown = (float) (1.0 - std::exp (-1.0 / (0.06 * nd)));
     }
-    void reset (float v) { lin = y = v; }
+    void reset (float v) { lin = y1 = y = v; }
     inline float process (float x)
     {
         const float d = x - lin;
-        lin += d > maxStep ? maxStep : (d < -maxStep ? -maxStep : d);
-        y += a * (lin - y);
-        if (lin == x && std::fabs (y - x) < 1.0e-5f) y = x;
+        lin += d > 0.0f ? std::min (d, stepUp) : std::max (d, -stepDown);
+        const float a = lin > y ? aUp : aDown;
+        y1 += a * (lin - y1);
+        y += a * (y1 - y);
+        if (lin == x && std::fabs (y - x) < 1.0e-5f) { y1 = y = x; }
         return y;
     }
 };
