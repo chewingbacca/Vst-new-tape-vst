@@ -87,6 +87,9 @@ public:
     std::atomic<double> internalBpm { 120.0 };
     std::atomic<bool> hostTransportSeen { false };
 
+    // Momentary effect pads in the editor: bit n holds lane n
+    std::atomic<uint32_t> uiHeldLanes { 0 };
+
     // Editor size persistence
     std::atomic<int> editorWidth { 1040 }, editorHeight { 680 }, editorPage { 0 };
 
@@ -111,6 +114,7 @@ private:
     juce::AudioBuffer<float> scratch;
     double internalPpq = 0.0;
     bool forceBypass = false;
+    uint32_t appliedHeldLanes = 0;
     double currentSampleRate = 48000.0;
     uint32_t handledGeneration = 0;
 

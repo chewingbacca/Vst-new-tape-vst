@@ -180,12 +180,15 @@ void Engine::handleMidi (const MidiEvent& e, const EngineParams& p)
     if (e.note >= 36 && e.note < 36 + kNumSlots) { if (e.on) wantTimeSlot = e.note - 36; }
     else if (e.note >= 48 && e.note < 48 + kNumSlots) { if (e.on) wantVolSlot = e.note - 48; }
     else if (e.note >= 60 && e.note < 60 + kNumSlots) { if (e.on) wantSeqSlot = e.note - 60; }
-    else if (e.note >= 72 && e.note < 72 + kNumLanes)
-    {
-        HeldRun& h = held[e.note - 72];
-        if (e.on) { h.down = true; h.start = beat; h.end = 1.0e18; h.var = 0; h.rnd = hash32 (++heldCounter * 2654435761U); }
-        else if (h.down) { h.down = false; h.end = beat; }
-    }
+    else if (e.note >= 72 && e.note < 72 + kNumLanes) holdLane (e.note - 72, e.on);
+}
+
+void Engine::holdLane (int lane, bool down)
+{
+    if (lane < 0 || lane >= kNumLanes) return;
+    HeldRun& h = held[lane];
+    if (down) { h.down = true; h.start = beat; h.end = 1.0e18; h.var = 0; h.rnd = hash32 (++heldCounter * 2654435761U); }
+    else if (h.down) { h.down = false; h.end = beat; }
 }
 
 // ---------------------------------------------------------------- lane lookup

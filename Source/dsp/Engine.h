@@ -121,6 +121,9 @@ public:
                   const TransportInfo& transport, const EngineParams& params,
                   const MidiEvent* midi, int numMidi);
 
+    // Momentary effect holds (pads / keys). Audio thread only.
+    void holdLane (int lane, bool down);
+
     VisualState visual;
     // test hook: when set, receives (reader position, warp gain) for every sample
     std::vector<std::pair<double, float>>* debugTrace = nullptr;

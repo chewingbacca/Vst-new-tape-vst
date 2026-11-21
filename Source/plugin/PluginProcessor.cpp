@@ -107,6 +107,16 @@ void SplinterProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& mi
     engine.setLoop (loops.acquire());
     syncBankToEngine();
 
+    {
+        const uint32_t want = uiHeldLanes.load (std::memory_order_relaxed);
+        if (want != appliedHeldLanes)
+        {
+            for (int l = 0; l < kNumLanes; ++l)
+                if (((want ^ appliedHeldLanes) >> l) & 1u) engine.holdLane (l, ((want >> l) & 1u) != 0);
+            appliedHeldLanes = want;
+        }
+    }
+
     // ---- MIDI (plus notes from the on-screen keyboard)
     keyboardState.processNextMidiBuffer (midi, 0, n, true);
     midiScratch.clear();
