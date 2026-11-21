@@ -197,8 +197,8 @@ public:
         stackS.setTime (0.08f, fs);
         for (auto& ch : chans)
             ch.stackDelay.setTime (0.05f, fs);
-        driftL.setCutoff (0.35f, fs / kChunk);
-        driftR.setCutoff (0.27f, fs / kChunk);
+        driftL.setCutoff (0.13f, fs / kChunk);
+        driftR.setCutoff (0.10f, fs / kChunk);
         for (auto& ch : chans)
             ch.sagEnv.setTimes (0.02f, 0.25f, fsOs);
         reset();
@@ -290,10 +290,11 @@ public:
         const float gateAmt = clamp01 (p.gate);
         const float thresh = gateAmt <= 0.0f ? 0.0f : dbToGain (-78.0f + 50.0f * gateAmt);
 
-        // stack: slowly drifting, different short delays per side (in samples)
-        const float dL = driftL.tick(), dR = driftR.tick();
-        chans[0].stackTarget = stackS.target * fs * (0.0045f + 0.0016f * dL);
-        chans[1].stackTarget = stackS.target * fs * (0.0170f + 0.0022f * dR);
+        // stack: each side is delayed by its own slowly wandering amount around a common mean, so neither side
+        // always leads (which would pull the image over) and the two fuzzes hear slightly different tunings
+        const float dL = std::clamp (driftL.tick(), -1.8f, 1.8f), dR = std::clamp (driftR.tick(), -1.8f, 1.8f);
+        chans[0].stackTarget = stackS.target * fs * (0.0090f + 0.0045f * dL);
+        chans[1].stackTarget = stackS.target * fs * (0.0090f + 0.0045f * dR);
 
         // ---- per-sample base-rate front end ----------------------------------------
         float pre[2][kChunk];

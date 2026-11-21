@@ -9,6 +9,7 @@
 //   swoon_render list-presets
 //   swoon_render list-params
 //   swoon_render bench [--preset ...] [--sr 48000] [--block 256]
+#include "Denormals.h"
 #include "TestSignals.h"
 
 #include "dsp/Engine.h"
@@ -20,7 +21,6 @@
 #include <cstring>
 #include <map>
 #include <string>
-#include <xmmintrin.h>
 
 using namespace swoon;
 using testsig::Stereo;
@@ -244,8 +244,7 @@ int cmdBench (const Options& o)
 
 int main (int argc, char** argv)
 {
-    // match the plugin's ScopedNoDenormals
-    _mm_setcsr (_mm_getcsr() | 0x8040);
+    enableFlushToZero();   // match the plugin's ScopedNoDenormals
 
     if (argc < 2)
     {

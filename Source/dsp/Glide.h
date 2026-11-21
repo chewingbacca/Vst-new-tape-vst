@@ -39,6 +39,7 @@ public:
         corrLen = static_cast<int> (0.006f * fs);
         stride = std::max (1, static_cast<int> (fs / 48000.0f + 0.5f));
         xfStep = 1.0f / (0.012f * fs);
+        resyncThreshold = 0.004f * fs;
 
         for (auto& h : heads)
             h.line.prepare (static_cast<int> (dHi) + 2 * searchRange + corrLen + static_cast<int> (0.01f * fs) + 64);
@@ -80,6 +81,7 @@ public:
         phase = 0.0f;
         dipEnv = dipTarget = slowAtTrigger = 0.0f;
         dipHold = holdoff = 0;
+        resyncPending = false;
         first = true;
     }
 
@@ -137,6 +139,9 @@ public:
                 --holdoff;
             else if (fast > 0.004f && fast > 1.7f * slowBefore + 0.002f)
             {
+                // A new strum: the cheapest moment to pull a wandered head back to its rest delay, because the
+                // audio skipped is the fading end of the previous stroke and the new attack lands on time.
+                resyncPending = true;
                 slowAtTrigger = slowBefore;
                 dipHold = static_cast<int> (0.03f * fs);
                 holdoff = static_cast<int> (0.09f * fs);
@@ -182,11 +187,14 @@ public:
                 h.delay -= speedErr;
 
                 float out;
+                if (resyncPending && h.xf >= 1.0f && std::abs (h.delay - rest) > resyncThreshold)
+                    splice (h, rest, 2.0f * xfStep);
+
                 if (h.xf < 1.0f)
                 {
                     h.oldDelay -= speedErr;
                     h.oldDelay = std::clamp (h.oldDelay, 2.0f, static_cast<float> (h.line.capacity() - 4));
-                    h.xf = std::min (1.0f, h.xf + xfStep);
+                    h.xf = std::min (1.0f, h.xf + h.xfStep);
                     const float a = h.line.readCubic (h.oldDelay);
                     const float b = h.line.readCubic (std::clamp (h.delay, 2.0f, static_cast<float> (h.line.capacity() - 4)));
                     const float t = smoothstep (h.xf);
@@ -195,15 +203,16 @@ public:
                 else
                 {
                     if (h.delay > dHi)
-                        splice (h, rest);
+                        splice (h, rest, xfStep);
                     else if (h.delay < dLo)
-                        splice (h, rest + 0.012f * fs);
+                        splice (h, rest + 0.012f * fs, xfStep);
                     out = h.line.readCubic (std::clamp (h.xf < 1.0f ? h.oldDelay : h.delay, 2.0f,
                                                         static_cast<float> (h.line.capacity() - 4)));
                 }
 
                 io[ch][i] = io[ch][i] * (1.0f - m) + out * m;
             }
+            resyncPending = false;
         }
         first = false;
     }
@@ -212,11 +221,11 @@ private:
     struct Head
     {
         DelayLine line;
-        float delay = 480.0f, oldDelay = 480.0f, xf = 1.0f, xfPower = 1.0f;
+        float delay = 480.0f, oldDelay = 480.0f, xf = 1.0f, xfPower = 1.0f, xfStep = 0.002f;
     };
 
     /** Starts a crossfade to a new head near `target`, at the lag whose recent audio best matches the current head's. */
-    void splice (Head& h, float target) noexcept
+    void splice (Head& h, float target, float fadeStep) noexcept
     {
         const int cur = static_cast<int> (h.delay);
         const int centre = static_cast<int> (target);
@@ -253,6 +262,7 @@ private:
         h.oldDelay = h.delay;
         h.delay = static_cast<float> (best) + (h.delay - static_cast<float> (cur));
         h.xf = 0.0f;
+        h.xfStep = fadeStep;
         // well-matched material sums in phase (linear fade); unmatched material wants an equal-power fade
         h.xfPower = lerp (0.5f, 1.0f, clamp01 (bestScore));
     }
@@ -266,8 +276,9 @@ private:
     EnvFollower envFast, envSlow;
     float fs = 48000.0f, dLo = 32.0f, dHi = 2200.0f, rest = 480.0f, xfStep = 0.002f;
     float phase = 0.0f, dipEnv = 0.0f, dipTarget = 0.0f, dipAttack = 0.01f, slowAtTrigger = 0.0f;
+    float resyncThreshold = 200.0f;
     int searchRange = 144, corrLen = 288, stride = 1, dipHold = 0, holdoff = 0;
-    bool first = true;
+    bool first = true, resyncPending = false;
 };
 
 } // namespace swoon

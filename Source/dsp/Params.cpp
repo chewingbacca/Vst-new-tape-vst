@@ -79,15 +79,23 @@ const char* slotName (Slot s)
 
 std::array<int, kNumSlots> resolveOrder (const ParamValues& pv)
 {
+    // Called on the audio thread every chunk: a stable insertion sort over seven items, no allocation
+    // (std::stable_sort may grab a temporary buffer).
     std::array<int, kNumSlots> order {};
+    std::array<long, kNumSlots> key {};
     for (int i = 0; i < kNumSlots; ++i)
-        order[static_cast<size_t> (i)] = i;
-
-    std::stable_sort (order.begin(), order.end(), [&pv] (int a, int b)
     {
-        return std::lround (pv[kOrderParams[static_cast<size_t> (a)]])
-             < std::lround (pv[kOrderParams[static_cast<size_t> (b)]]);
-    });
+        const long k = std::lround (pv[kOrderParams[static_cast<size_t> (i)]]);
+        int j = i;
+        while (j > 0 && key[static_cast<size_t> (j - 1)] > k)
+        {
+            key[static_cast<size_t> (j)] = key[static_cast<size_t> (j - 1)];
+            order[static_cast<size_t> (j)] = order[static_cast<size_t> (j - 1)];
+            --j;
+        }
+        key[static_cast<size_t> (j)] = k;
+        order[static_cast<size_t> (j)] = i;
+    }
     return order;
 }
 

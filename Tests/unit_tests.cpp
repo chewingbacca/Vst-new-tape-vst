@@ -1,5 +1,7 @@
 // Unit tests for Swoon's DSP building blocks and engine invariants.
 // Tiny self-contained framework: no external dependency, runs under ctest.
+#include "Denormals.h"
+
 #include "dsp/AmpTape.h"
 #include "dsp/Engine.h"
 #include "dsp/Fuzz.h"
@@ -14,9 +16,28 @@
 #include <set>
 #include <string>
 #include <vector>
-#include <xmmintrin.h>
 
 using namespace swoon;
+
+// ---- heap-allocation counter (for the real-time-safety test) ---------------------------------
+#include <atomic>
+#include <cstdlib>
+#include <new>
+
+static std::atomic<long> gAllocations { 0 };
+
+void* operator new (std::size_t size)
+{
+    gAllocations.fetch_add (1, std::memory_order_relaxed);
+    if (void* p = std::malloc (size ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void* operator new[] (std::size_t size) { return operator new (size); }
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 
 namespace
 {
@@ -632,6 +653,47 @@ TEST (engine_survives_parameter_abuse)
     }
 }
 
+TEST (engine_process_never_allocates)
+{
+    // Everything is allocated in prepare(). Run with every kind of change a host can throw at it - random
+    // parameters, mode switches, reordering, module toggles, preset loads, odd block sizes - and count calls
+    // to operator new.
+    Engine e;
+    e.prepare (48000.0, 2048);
+    Lcg rng;
+    ParamValues pv;
+    const auto& presets = factoryPresets();
+    std::vector<float> l (2048), r (2048);
+
+    // warm up outside the measured region (first-call snapping etc.)
+    e.process (l.data(), r.data(), 512, pv);
+
+    const long before = gAllocations.load();
+    for (int b = 0; b < 3000; ++b)
+    {
+        if (b % 97 == 0)
+            pv = presetValues (presets[static_cast<size_t> (rng.uni() * 0.999f * static_cast<float> (presets.size()))]);
+        else if (b % 5 == 0)
+            for (const auto& d : paramDefs())
+                if (d.index != P::bypass && rng.uni() < 0.2f)
+                    pv[d.index] = fromNormalised (d.index, rng.uni());
+
+        const int n = 1 + static_cast<int> (rng.uni() * 2047.0f);
+        for (int i = 0; i < n; ++i)
+        {
+            l[static_cast<size_t> (i)] = 0.4f * rng.next();
+            r[static_cast<size_t> (i)] = 0.4f * rng.next();
+        }
+        e.process (l.data(), r.data(), n, pv);
+    }
+    e.reset();
+    e.process (l.data(), r.data(), 256, pv);
+    const long after = gAllocations.load();
+    CHECK (after == before);
+    if (after != before)
+        std::printf ("  %ld allocations during process()\n", after - before);
+}
+
 TEST (engine_limiter_holds_the_ceiling)
 {
     Engine e;
@@ -714,7 +776,7 @@ TEST (every_preset_renders_sanely)
 //==============================================================================
 int main (int argc, char** argv)
 {
-    _mm_setcsr (_mm_getcsr() | 0x8040);   // flush denormals, as the plugin does
+    enableFlushToZero();   // as the plugin does on the audio thread
     const std::string filter = argc > 1 ? argv[1] : "";
 
     for (const auto& t : registry())
