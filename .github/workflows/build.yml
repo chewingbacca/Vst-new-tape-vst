@@ -34,7 +34,7 @@ jobs:
       matrix:
         include:
           - { name: Windows, os: windows-latest, zip: Splinter-Windows.zip }
-          - { name: macOS,   os: macos-14,       zip: Splinter-macOS.zip }
+          - { name: macOS,   os: macos-latest,   zip: Splinter-macOS.zip }
           - { name: Linux,   os: ubuntu-24.04,   zip: Splinter-Linux.zip }
     steps:
       - uses: actions/checkout@v4
