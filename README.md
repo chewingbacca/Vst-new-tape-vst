@@ -247,8 +247,9 @@ on the host's buffer size. Glide adds a further, unreported 10–45 ms to the we
 signal while it is on. That delay is the effect itself (the same way a chorus
 has one), but it matters if you play through the Standalone build live.
 
-Measured on the development machine at 48 kHz with 256-sample blocks, the
-heaviest presets use about 11–12 % of one core and clean presets about 5 %.
+Measured on the development machine (a 2.1 GHz Xeon virtual CPU) at 48 kHz,
+the heaviest presets use about 11–14 % of one core and clean presets about
+5–6 %, whatever the host's buffer size.
 
 ## Testing
 
@@ -262,10 +263,11 @@ python3 tools/preset_report.py          # loudness / balance table for the prese
 
 - **Unit tests** (`Tests/unit_tests.cpp`): parameter table, oversampler
   (pass-band, images, exact latency), the diode solver, pitch shifter, reverb
-  stability (maximum decay and shimmer for 20 s, freeze for 30 s), glide
-  accuracy and splicing, and engine invariants (bit-exact bypass, constant
-  latency, block-size independence, random parameter abuse, the limiter
-  ceiling, silence in → silence out).
+  stability (maximum decay and shimmer for 20 s, lossless freeze), glide
+  accuracy and splicing, and engine invariants: bit-exact bypass, constant
+  latency, identical output for any host block size, zero heap allocations
+  while processing, random parameter abuse, non-finite input, rapid
+  reordering, the limiter ceiling, silence in → silence out.
 - **Render suite** (`tools/run_suite.py`): renders an impulse, a sine sweep,
   tone bursts, silence and a synthesised strummed-guitar phrase through every
   module and every preset, and checks for non-finite samples, clipping, DC,

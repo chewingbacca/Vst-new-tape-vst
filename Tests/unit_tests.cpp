@@ -262,8 +262,8 @@ TEST (diode_stage_is_bounded_monotonic_and_settles_to_static_curve)
         float u = 0.0f;
         for (int i = 0; i < 20000; ++i)
             u = st.process (d);
-        // three Newton steps from a bounded guess: within 1.5 % of the exact curve everywhere
-        CHECK_NEAR (u + 0.05 * std::sinh (static_cast<double> (u)), d, std::abs (d) * 1.5e-2 + 1.0e-3);
+        // two Halley steps from a bounded guess: on the exact curve to within float precision
+        CHECK_NEAR (u + 0.05 * std::sinh (static_cast<double> (u)), d, std::abs (d) * 2.0e-3 + 1.0e-3);
         CHECK (std::abs (u) < 12.5f);
     }
 

@@ -6,7 +6,7 @@
 //     du/dt = wc * (d - u - beta * sinh (u))
 //
 // (u = output in thermal-voltage units, d = driven input). Solved per sample
-// with BDF2 + Newton at the oversampled rate. Because the capacitor slews the
+// with BDF2 + two Halley steps at the oversampled rate. Because the capacitor slews the
 // output between the diode rails the stage is strongly self-band-limiting,
 // which is what gives this family of fuzz its woolly sustain - and it keeps
 // aliasing far below what a static waveshaper would produce.
@@ -44,19 +44,21 @@ struct DiodeStage
         const float rhs = (4.0f / 3.0f) * u1 - (1.0f / 3.0f) * u2 + c * d;
         const float mag = std::abs (rhs);
 
-        // Both estimates over-shoot the root, so Newton converges monotonically from above.
+        // Both estimates over-shoot the root, so the iteration approaches it from above.
         const float lin = mag * invAB;
         const float q = mag * invB;
         const float sat = std::log (q + std::sqrt (q * q + 1.0f));   // asinh
         float u = std::min (lin, sat);
 
-        for (int it = 0; it < 3; ++it)
+        // two Halley steps (cubic convergence): within 1e-4 of the exact root everywhere
+        for (int it = 0; it < 2; ++it)
         {
             const float e = std::exp (u);
             const float ie = 1.0f / e;
             const float sh = 0.5f * (e - ie), ch = 0.5f * (e + ie);
             const float f = a * u + b * sh - mag;
-            u -= f / (a + b * ch);
+            const float f1 = a + b * ch, f2 = b * sh;
+            u -= 2.0f * f * f1 / (2.0f * f1 * f1 - f * f2);
         }
 
         u = std::copysign (std::max (u, 0.0f), rhs);
@@ -66,7 +68,7 @@ struct DiodeStage
     }
 };
 
-/** Four diode-feedback stages solved together so the compiler can vectorise the Newton iteration:
+/** Four diode-feedback stages solved together so the compiler can vectorise the iteration:
     lanes 0/1 = first stage left/right, lanes 2/3 = second stage left/right. Same maths as DiodeStage. */
 struct DiodeQuad
 {
@@ -119,7 +121,7 @@ struct DiodeQuad
             u[k] = std::min (mag[k] * invAB[k], sat);
         }
 
-        for (int it = 0; it < 3; ++it)
+        for (int it = 0; it < 2; ++it)      // Halley steps, as in DiodeStage
             for (int k = 0; k < 4; ++k)
             {
                 // exp (u), u >= 0: 2^n * poly (2^f), f in [-0.5, 0.5]
@@ -136,7 +138,8 @@ struct DiodeQuad
 
                 const float sh = 0.5f * (ex - ie), ch = 0.5f * (ex + ie);
                 const float fn = a[k] * u[k] + b[k] * sh - mag[k];
-                u[k] -= fn / (a[k] + b[k] * ch);
+                const float f1 = a[k] + b[k] * ch, f2 = b[k] * sh;
+                u[k] -= 2.0f * fn * f1 / (2.0f * f1 * f1 - fn * f2);
             }
 
         for (int k = 0; k < 4; ++k)

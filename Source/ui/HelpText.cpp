@@ -51,13 +51,15 @@ constexpr Entry kEntries[] = {
     // reverse
     { "revMode",     "Swell: taps that rise and then stop, so notes bloom. Tape: true reverse delay. Both: reverse into the swell." },
     { "revTime",     "Length of the swell, or of each reversed slice." },
+    { "revSync",     "Locks the reverse time to the host tempo. Free uses Time." },
     { "revFeedback", "Repeats." },
     { "revSmear",    "Shape of the rise and amount of diffusion." },
     { "revTone",     "Low-pass on the wet signal. Turn it down for the classic sound." },
     { "revMix",      "At 100 % there is no dry signal at all, so notes bloom out of nothing." },
 
     // soft focus
-    { "focTime",     "Left delay time; the right is always 1.52x longer." },
+    { "focTime",     "Left delay time; the right is 1.52x longer." },
+    { "focSync",     "Locks the left delay to the host tempo; the right becomes its dotted value (1.5x). Free uses Time." },
     { "focFeedback", "How long the two delays keep feeding each other." },
     { "focDetune",   "Peak detune of the four chorus voices." },
     { "focHaze",     "Amount and length of the reverb inside the patch." },

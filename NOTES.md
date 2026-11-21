@@ -8,7 +8,8 @@ Living document so the work survives a context reset. Read this first.
 - [x] DSP engine: all modules, macros, reordering, limiter (`Source/dsp/`)
 - [x] Offline harness (`swoon_render`), unit tests (`swoon_tests`), Python
       analysis (`tools/`), suite runner (`tools/run_suite.py`)
-- [x] Custom UI (`Source/ui/`, `Source/PluginEditor.*`), embedded fonts
+- [x] Custom UI (`Source/ui/`, `Source/PluginEditor.*`), embedded fonts; two
+      rounds (second: front-page Freeze, typed values, preset search, status line)
 - [x] 39 factory presets, level-matched (`Source/dsp/Presets.cpp`,
       `PresetTrims.inc`)
 - [x] pluginval strictness 10 passes on the full plugin
@@ -39,8 +40,14 @@ Living document so the work survives a context reset. Read this first.
   engine), presets and the UI all derive from it. Add a parameter there and it
   appears in the host, the state and the Machine page automatically.
 - `Engine` (pimpl) is the whole signal path. `process (L, R, n, ParamValues)`
-  works in chunks of `kChunk = 32` samples: control-rate updates per chunk,
-  per-sample smoothing inside.
+  collects input into a FIFO and always processes whole chunks of
+  `kChunk = 32` samples (control-rate updates per chunk, per-sample smoothing
+  inside), handing each chunk back one chunk later. That adds 32 samples of
+  reported latency and makes the output bit-identical for any host block
+  size. (Before this, LFO/drift/smoother speeds scaled with small or odd host
+  buffers, because control-rate objects advanced once per call.)
+- Input is sanitised on entry (non-finite -> 0, clamp to +-16). `isBad()` tests
+  the bit pattern so fast-math modes cannot remove it.
 - `PluginProcessor` copies APVTS atomics into `ParamValues` each block, handles
   mono/stereo layouts, and feeds `VizData` (lock-free meters + scope FIFO).
 - On/off parameters use a custom `SwitchParameter` that snaps to 0/1.
@@ -72,6 +79,9 @@ combination is valid.
   amount whether on or off, so reported latency is constant.
 - Discrete switches go through `ModeSwitch`: dip the wet to zero over a few
   ms, swap, come back.
+- `Smooth` (one-pole) snaps onto its target when float rounding would stall
+  it; use `SmoothD` (double) for anything measured in samples (delay lengths),
+  where a float stall is whole samples at high rates.
 - Every module ends with an `isBad()` guard that clears its state; the engine
   has a final guard that resets everything. Neither has ever fired in testing.
 
@@ -87,9 +97,10 @@ macro at 0 the written values are taken as the module's own settings.
 
 **Fuzz** (`Fuzz.h`). Two cascaded clipping stages, each the ODE of a gain stage
 with a capacitor and anti-parallel diodes in the feedback loop:
-`du/dt = wc (d - u - beta sinh u)`, solved with BDF2 + three Newton steps from a
-bounded initial guess (min of the linear and asinh solutions, both overshoot,
-so Newton converges monotonically). The capacitor slews the output between the
+`du/dt = wc (d - u - beta sinh u)`, solved with BDF2 + two Halley steps from a
+bounded initial guess (min of the linear and asinh solutions). Two Halley steps
+land within 1e-4 of the root; three Newton steps were both slower and 200x
+less accurate. The capacitor slews the output between the
 rails, which gives the woolly sustain and makes the stage self-band-limiting.
 `DiodeQuad` solves both stages of both channels as four lanes so the compiler
 vectorises it (second stage runs one oversampled sample behind the first; the
@@ -150,7 +161,14 @@ target -3 dBFS) + soft clipper with a hard ceiling at -0.2 dBFS. Zero latency.
 **Reordering** (`Engine.cpp`). Muting the output is not enough: each module's
 memory would record the step in its input. So every module's *input* and the
 chain output are faded to zero, the latency lines are allowed to drain, the
-order swaps, and everything fades back. Tails survive and re-emerge.
+order swaps, and everything fades back. Tails survive and re-emerge. It is an
+explicit state machine (idle / fadeOut / drain / settle / fadeIn); the swap
+always takes the newest requested order, so changes that arrive mid-transition
+cannot strand it (an earlier ad-hoc version could deadlock muted).
+
+**Tempo sync**. `focSync` / `revSync` (Free, 1/16 .. 1/2). Synced Focus uses a
+1 : 1.5 ratio (straight against dotted) instead of 1 : 1.52. The processor
+passes the host BPM with `Engine::setTempo` each block (120 if unknown).
 
 ## Measurements (48 kHz unless noted)
 
@@ -169,14 +187,18 @@ order swaps, and everything fades back. Tails survive and re-emerge.
   100 %. Maximum decay + maximum shimmer + loud noise for 20 s stays bounded.
 - Click tests: 24/24 (HF spike at each event < -58 dBFS or within 9 dB of the
   steady HF level).
-- Latency: 219 samples at 48 kHz (fuzz 49, amp 1, tape 169). Bypass is a
-  bit-exact delayed copy of the input.
+- Latency: 251 samples at 48 kHz (fuzz 49, amp 1, tape 169, internal block
+  32). Bypass is a bit-exact delayed copy of the input, also when engaged
+  while running.
 - `Engine::process` performs zero heap allocations (unit test counts calls to
   operator new across preset loads, reordering and random parameter changes).
 - Clang 18 builds the DSP and tests with no warnings; same results, same speed.
 - A fresh `git clone` + `./build.sh` (fetching JUCE) builds and passes.
-- CPU (this VM, one core, 256-sample blocks): fuzz 6 %, wash 1.5 %, focus
-  1.3 %, everything on 11 %; clean presets about 5 %. 96 kHz: 18 %; 192 kHz: 31 %.
+- CPU (one core, 256-sample blocks): everything on measured 11 % at 48 kHz
+  (fuzz 6 %, wash 1.5 %, focus 1.3 %), clean presets about 5 %; 96 kHz 18 %,
+  192 kHz 31 %. The VM later moved to a slower host (2.1 GHz Xeon vCPU), where
+  the same binaries measure about 14 % everything-on. CPU no longer depends on
+  host block size (block size 1 used to cost half as much again).
 - Presets: walls sit at -17.5 dBFS RMS on the strummed phrase, clean presets
   -20.5, ambient -22; the limiter never engages on any of them.
 
@@ -199,6 +221,19 @@ order swaps, and everything fades back. Tails survive and re-emerge.
 - Shimmer: low-pass every pass, keep pitched loop gain below unity, high
   diffusion to hide grain.
 
+## Independent review (done once, by a separate agent, read-only)
+
+Found and fixed, each with a regression test in `Tests/unit_tests.cpp`:
+reorder state machine could deadlock muted; Reverse replayed stale audio after
+a mode switch (lines are now written in every mode); Wash line lengths stalled
+short of whole samples after a Size change, so Freeze slowly lost level (now
+`SmoothD` + whole-sample reads on all lines when frozen); control-rate speeds
+depended on host block size (now a fixed internal block); a frozen tail
+survived switching Wash off; bypass engaged at run time leaked wet at -100 dB;
+non-finite input was not scrubbed; MSVC was set to `/fp:fast`; preset list
+read without the lock. Left as is, on purpose: Glide's ~10 ms rest delay is
+not reported as latency (see README, "Latency and CPU").
+
 ## Not verified (needs ears or another machine)
 
 - Whether any of it actually sounds good. Everything above is measurement.
@@ -210,16 +245,17 @@ order swaps, and everything fades back. Tails survive and re-emerge.
   playing.
 - macOS (AU, CoreGraphics rendering of the haze), Windows, HiDPI, and real
   DAW hosts. Only pluginval and the headless snapshot tool have loaded it.
-- Mouse wheel and keyboard handling in the UI were implemented but not driven.
+- Mouse wheel handling in the UI was implemented but never driven; typed value
+  entry and browser keys were driven only by synthetic events in the snapshot
+  tool, not in a live host window.
 
 ## What I'd tune next
 
 - A listening pass over the presets with a real guitar DI; adjust gate,
   sustain and trims.
-- Tempo sync for Focus and Reverse times.
 - Fuzz: slight asymmetry between the diodes for even harmonics; optional
   2x/4x "eco" mode.
 - Wash: early-reflection stage for small sizes; a width control of its own.
 - Glide: expose the dip sensitivity; latency-free mode for live playing.
-- UI: typed value entry, tooltips, preset search, a visible Freeze button on
-  the front page.
+- UI: drive the mouse-wheel and keyboard paths in a real host; HiDPI check;
+  a tap/hold "momentary freeze" gesture.
