@@ -102,13 +102,19 @@ latency padding accounts for it). 8x oversampling at 44.1/48 kHz, 4x at
 - Hand-rolled exp/log were *slower* than glibc's in scalar code; they only pay
   off inside the vectorised four-lane loop.
 
+**Fuzz stack**. Each side's input goes through its own slowly wandering delay
+around a common 9 ms mean (scaled by Stack), so neither side always leads and
+the two fuzzes hear slightly different tunings.
+
 **Glide** (`Glide.h`). Variable-speed read head (delay changes by `1 - ratio`
 per sample): exact, artefact-free pitch change. A weak spring pulls the head
 back to a 10 ms rest delay; if it leaves its 0.6–46 ms window it is spliced
 back with a 12 ms crossfade at the lag found by correlation search. Sources:
 sine wobble with wandering rate, band-limited random drift (common + per-side),
 and a strum-triggered dip (fast/slow envelope ratio; strength keeps updating
-for 30 ms so harder strums dip further). Spread is square-law: any pitch
+for 30 ms so harder strums dip further). Every detected strum also re-anchors a
+wandered head to the rest delay with a fast crossfade: the audio skipped is the
+fading end of the previous stroke, and the new attack lands on time. Spread is square-law: any pitch
 difference between sides integrates into a time difference and decorrelates
 the image fast.
 
@@ -149,7 +155,12 @@ order swaps, and everything fades back. Tails survive and re-emerge.
 ## Measurements (48 kHz unless noted)
 
 - Fuzz aliasing at full sustain, inharmonic energy vs harmonics:
-  1 kHz -130 dB, 2.5 kHz -88 dB, 5 kHz -76 dB (was -50 dB at 4x).
+  1 kHz -130 dB, 2.5 kHz -88 dB, 5 kHz -76 dB (was -50 dB at 4x). Octave type:
+  -113 / -78 / -59 dB. Velcro (deliberately harsh, faster edges): -115 / -57 / -50 dB.
+- Fuzz types and voicings are level-matched to within about 1 dB at Tone 50 %
+  (around -18 dBFS RMS on the strummed phrase); Tone moves level by +-2-3 dB.
+- Strum timing through Glide: each stroke leaves 8-14 ms after it arrives, even
+  with 95-cent dips (the head is re-anchored at every detected onset).
 - Glide: a 10-cent wobble measures ±10.0–10.6 cents on a tone; level unchanged.
 - Wash RT60 measures 80–90 % of the Decay setting in the mids; wet level stays
   within ±1.5 dB from 1 s to 40 s decay.
@@ -160,6 +171,10 @@ order swaps, and everything fades back. Tails survive and re-emerge.
   steady HF level).
 - Latency: 219 samples at 48 kHz (fuzz 49, amp 1, tape 169). Bypass is a
   bit-exact delayed copy of the input.
+- `Engine::process` performs zero heap allocations (unit test counts calls to
+  operator new across preset loads, reordering and random parameter changes).
+- Clang 18 builds the DSP and tests with no warnings; same results, same speed.
+- A fresh `git clone` + `./build.sh` (fetching JUCE) builds and passes.
 - CPU (this VM, one core, 256-sample blocks): fuzz 6 %, wash 1.5 %, focus
   1.3 %, everything on 11 %; clean presets about 5 %. 96 kHz: 18 %; 192 kHz: 31 %.
 - Presets: walls sit at -17.5 dBFS RMS on the strummed phrase, clean presets

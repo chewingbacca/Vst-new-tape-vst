@@ -225,6 +225,13 @@ lot of air), **Ambient** (long, slow, mostly reverb), **Texture** (reverse,
 velcro, vibrato and other strangeness) and **Utility** (starting points and
 single-module setups). They are level-matched within each kind of sound.
 
+### Audition clips
+
+`docs/audio/` holds short MP3 renders of a dozen presets (and the dry input,
+`00-dry-di.mp3`) made by `python3 tools/make_demos.py`. The source is the test
+harness's synthesised strummed-guitar phrase, a plucked-string model rather
+than a real instrument, so treat them as a sketch of what each preset does.
+
 ### Latency and CPU
 
 Swoon reports a fixed latency of about 4.6 ms (219 samples at 48 kHz) from the
@@ -263,8 +270,8 @@ python3 tools/preset_report.py          # loudness / balance table for the prese
   binary (`PLUGINVAL=/path/to/pluginval`, or on `PATH`).
 
 `build/swoon_render` is the harness itself; `Tests/render_main.cpp` lists its
-options. `build/swoon_ui_snapshot_artefacts/Release/swoon_ui_snapshot out.png`
-renders the editor to a PNG without a host.
+options. `build/swoon_ui_snapshot out.png` renders the editor to a PNG without
+a host (wrap it in `xvfb-run -a` on a headless Linux box).
 
 ## Status and limits
 
