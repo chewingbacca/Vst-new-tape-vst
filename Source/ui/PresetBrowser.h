@@ -1,5 +1,6 @@
-// Preset browser overlay: category filter, list with name + note, inline
-// "save as" field and delete for user presets. No native dialogs, no modal loops.
+// Preset browser overlay: category filter, search (name + note), list with
+// name + note, inline "save as" field and delete for user presets.
+// No native dialogs, no modal loops.
 #pragma once
 
 #include "Theme.h"
@@ -34,7 +35,18 @@ public:
     void focusOfChildComponentChanged (FocusChangeType) override;
 
 private:
-    enum class Zone { none, outside, panel, close, category, row, rowDelete, save, scrollbar };
+    enum class Zone { none, outside, panel, close, category, row, rowDelete, save, scrollbar, searchClear };
+
+    /** Single-line field that lets the browser see keys first (arrows keep walking the list while typing). */
+    struct KeyForwardingField final : public juce::TextEditor
+    {
+        std::function<bool (const juce::KeyPress&)> onKey;
+
+        bool keyPressed (const juce::KeyPress& key) override
+        {
+            return (onKey != nullptr && onKey (key)) || juce::TextEditor::keyPressed (key);
+        }
+    };
 
     struct Hit
     {
@@ -62,19 +74,27 @@ private:
     bool saveWouldReplace() const;
     void setStatus (const juce::String&, juce::Colour);
 
+    void paintPanelBackground (juce::Graphics&);
+    void paintTitleRow (juce::Graphics&);
     void paintCategories (juce::Graphics&);
     void paintList (juce::Graphics&);
+    void paintListFades (juce::Graphics&);
     void paintFooter (juce::Graphics&);
+    void searchChanged();
 
     PresetManager& presets;
     juce::TextEditor nameField;
+    KeyForwardingField searchField;
+    juce::String searchText;           // trimmed; empty = no search
+    int totalEntries = 0;
+    juce::Image fadeMask;              // alpha ramp used to melt the list's clipped edges into the panel
 
     juce::StringArray categories;      // "All" first
     std::vector<int> categoryCounts;
     juce::String selectedCategory { "All" };
     std::vector<int> rows;             // entry indices after filtering
 
-    juce::Rectangle<float> panel, closeBounds, categoryArea, listArea, fieldBounds, saveBounds;
+    juce::Rectangle<float> panel, closeBounds, categoryArea, listArea, fieldBounds, saveBounds, searchBounds;
     float scroll = 0.0f;
     Hit hover, pressed;
     int armedDeleteRow = -1;

@@ -7,8 +7,8 @@ namespace swoon::ui
 
 namespace
 {
-constexpr int kHazeH = 284;
-constexpr int kMacroTop = 290;
+constexpr int kHazeH = 280;
+constexpr int kMacroTop = 284;
 constexpr int kMacroH = 156;
 constexpr int kChainH = 84;
 
@@ -21,7 +21,7 @@ struct MacroDef
 } // namespace
 
 SleevePage::SleevePage (SwoonAudioProcessor& processor, ChainModel& model)
-    : haze (processor), chain (processor, model)
+    : haze (processor), chain (processor, model), freeze (processor.getParam (P::washFreeze))
 {
     const MacroDef defs[] = {
         { P::wall,   col::rose,     true },
@@ -43,6 +43,14 @@ SleevePage::SleevePage (SwoonAudioProcessor& processor, ChainModel& model)
     }
 
     addAndMakeVisible (chain);
+    addAndMakeVisible (freeze);
+
+    if (const auto* powerDef = powerParamFor (Module::Wash))
+    {
+        auto& param = processor.getParam (powerDef->index);
+        freeze.setModuleEnabled (param.getValue() > 0.5f);
+        washPower = std::make_unique<juce::ParameterAttachment> (param, [this] (float v) { freeze.setModuleEnabled (v > 0.5f); });
+    }
 }
 
 void SleevePage::paint (juce::Graphics& g)
@@ -77,7 +85,8 @@ void SleevePage::resized()
         macros[(size_t) i]->setBounds (juce::roundToInt (cx - 70.0f), kMacroTop, 140, kMacroH);
     }
 
-    chain.setBounds (22, getHeight() - kChainH - 18, getWidth() - 44, kChainH);
+    chain.setBounds (22, getHeight() - kChainH - 10, getWidth() - 44, kChainH);
+    freeze.setBounds (getWidth() - 186, kHazeH - 74, 164, 62);
 }
 
 } // namespace swoon::ui

@@ -1,6 +1,6 @@
 // Swoon editor. Everything is laid out in base coordinates (1000 x 660) inside
 // `content`, which is scaled as a whole to the window, so the UI is resolution
-// independent and freely resizable at a fixed aspect ratio.
+// independent and freely resizable (80 % to 170 %) at a fixed aspect ratio.
 //
 // Editor state kept in SwoonAudioProcessor::getUiState():
 //   "page"   int  0 = sleeve (front page), 1 = machine (module pages)
@@ -14,9 +14,11 @@
 #include "ui/MachinePage.h"
 #include "ui/PresetBrowser.h"
 #include "ui/SleevePage.h"
+#include "ui/StatusLine.h"
 #include "ui/Theme.h"
 
 class SwoonAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                        public swoon::ui::HelpSink,
                                         private juce::Timer,
                                         private juce::ChangeListener
 {
@@ -33,10 +35,15 @@ public:
     bool isBrowserOpen() const noexcept { return browser.isVisible(); }
     void setBrowserOpen (bool shouldBeOpen);
 
+    // HelpSink: whatever is under the mouse describes itself in the status line
+    void showHelp (const juce::String& title, const juce::String& text, const juce::String& value) override;
+    void clearHelp() override;
+
 private:
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void updateSleeveText();
+    void updateIdleHint();
 
     SwoonAudioProcessor& proc;
 
@@ -49,6 +56,7 @@ private:
     swoon::ui::SleevePage sleeve;
     swoon::ui::MachinePage machine;
     swoon::ui::PresetBrowser browser;
+    swoon::ui::StatusLine statusLine;
 
     int page = 0;
     bool constructed = false;

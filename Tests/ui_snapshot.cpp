@@ -2,23 +2,27 @@
 //
 //   swoon_ui_snapshot <out.png> [--size WxH] [--scale S] [--preset N] [--ui key=value]... [--frames N]
 //                     [--set paramId=value]... [--browser] [--silent]
-//                     [--hover X,Y] [--click X,Y] [--drag X1,Y1,X2,Y2] [--hold X1,Y1,X2,Y2]...
-//                     [--save NAME]... [--type TEXT] [--bench]
+//                     [--hover X,Y] [--click X,Y] [--cmdclick X,Y] [--dblclick X,Y]
+//                     [--drag X1,Y1,X2,Y2] [--hold X1,Y1,X2,Y2] [--type TEXT] [--return] [--escape]...
+//                     [--save NAME]... [--bench]
 //
 // --ui sets a property on the processor's UI state tree before the editor is
 // created (e.g. --ui page=1). --set writes a parameter (real units, e.g.
 // --set wall=0.9 --set ordWash=1). --browser opens the preset browser before
-// the capture. --silent feeds silence instead of the test drone. --hover,
-// --click, --drag and --hold (a drag that is not released) send synthetic mouse
-// events (editor pixel coordinates, in command-line order) to whatever
-// component is under the point. --save NAME stores the current settings as a
-// user preset first. (User presets live under the home directory: point HOME
-// at a scratch folder when testing so nothing lands in the real preset folder.)
-// --type TEXT puts text into the editor's text field (the browser's "save as"
-// name) before the mouse actions run. --bench prints the CPU cost of the
-// animated parts. Audio is
-// pumped through the processor before the capture so meters and the
-// visualiser have something to show.
+// the capture. --silent feeds silence instead of the test drone.
+//
+// The interaction options run in command-line order after the warm-up frames.
+// --hover, --click, --cmdclick (Ctrl/Cmd held), --dblclick, --drag and --hold
+// (a drag that is not released) send synthetic mouse events, in editor pixel
+// coordinates, to whatever component is under the point. --type TEXT replaces
+// the text of the text field that was clicked last (or else the first one that
+// is showing); --return and --escape send that key to it.
+//
+// --save NAME stores the current settings as a user preset first. (User
+// presets live under the home directory: point HOME at a scratch folder when
+// testing so nothing lands in the real preset folder.) --bench prints the CPU
+// cost of the animated parts. Audio is pumped through the processor before the
+// capture so meters and the visualiser have something to show.
 #include "../Source/PluginEditor.h"
 #include "../Source/PluginProcessor.h"
 
@@ -56,55 +60,34 @@ void pumpAudio (SwoonAudioProcessor& proc, int blocks)
     }
 }
 
-struct MouseAction
+struct Action
 {
-    enum class Kind { hover, click, drag, hold } kind;
+    enum class Kind { hover, click, cmdClick, doubleClick, drag, hold, type, pressReturn, pressEscape } kind;
     juce::Point<float> from, to;
+    juce::String text;
 };
 
 juce::MouseEvent makeEvent (juce::Component& target, juce::Component& editor, juce::Point<float> editorPos,
-                            juce::Point<float> editorDownPos, bool buttonDown, bool dragged)
+                            juce::Point<float> editorDownPos, bool buttonDown, bool dragged, bool command = false, int clicks = 1)
 {
     const auto local = target.getLocalPoint (&editor, editorPos);
     const auto localDown = target.getLocalPoint (&editor, editorDownPos);
     const auto now = juce::Time::getCurrentTime();
+    const int flags = (buttonDown ? juce::ModifierKeys::leftButtonModifier : 0) | (command ? juce::ModifierKeys::commandModifier : 0);
 
-    return { juce::Desktop::getInstance().getMainMouseSource(), local,
-             buttonDown ? juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier) : juce::ModifierKeys(),
+    return { juce::Desktop::getInstance().getMainMouseSource(), local, juce::ModifierKeys (flags),
              juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
              juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX, juce::MouseInputSource::defaultTiltY,
-             &target, &target, now, localDown, now, 1, dragged };
+             &target, &target, now, localDown, now, clicks, dragged };
 }
 
-void perform (juce::Component& editor, const MouseAction& action)
+/** True when the component and all of its parents are visible (the editor has no peer here). */
+bool isOnShow (const juce::Component& c)
 {
-    auto* target = editor.getComponentAt (action.from);
-    if (target == nullptr)
-        return;
-
-    target->mouseEnter (makeEvent (*target, editor, action.from, action.from, false, false));
-    target->mouseMove (makeEvent (*target, editor, action.from, action.from, false, false));
-
-    if (action.kind == MouseAction::Kind::hover)
-        return;
-
-    target->mouseDown (makeEvent (*target, editor, action.from, action.from, true, false));
-
-    if (action.kind == MouseAction::Kind::drag || action.kind == MouseAction::Kind::hold)
-    {
-        for (int i = 1; i <= 8; ++i)
-            target->mouseDrag (makeEvent (*target, editor, action.from + (action.to - action.from) * ((float) i / 8.0f), action.from, true, true));
-
-        if (action.kind == MouseAction::Kind::hold)
-            return;
-
-        target->mouseUp (makeEvent (*target, editor, action.to, action.from, false, true));
-    }
-    else
-    {
-        target->mouseUp (makeEvent (*target, editor, action.from, action.from, false, false));
-    }
-
+    for (auto* p = &c; p != nullptr; p = p->getParentComponent())
+        if (! p->isVisible())
+            return false;
+    return true;
 }
 
 juce::TextEditor* findTextEditor (juce::Component& parent)
@@ -112,11 +95,85 @@ juce::TextEditor* findTextEditor (juce::Component& parent)
     for (auto* child : parent.getChildren())
     {
         if (auto* field = dynamic_cast<juce::TextEditor*> (child))
-            return field;
+            if (isOnShow (*field))
+                return field;
+
         if (auto* nested = findTextEditor (*child))
             return nested;
     }
     return nullptr;
+}
+
+juce::Component::SafePointer<juce::TextEditor> lastClickedField;
+
+juce::TextEditor* currentTextField (juce::Component& editor)
+{
+    if (lastClickedField != nullptr && isOnShow (*lastClickedField))
+        return lastClickedField.getComponent();
+
+    return findTextEditor (editor);
+}
+
+void perform (juce::Component& editor, const Action& action)
+{
+    using Kind = Action::Kind;
+
+    if (action.kind == Kind::type || action.kind == Kind::pressReturn || action.kind == Kind::pressEscape)
+    {
+        if (auto* field = currentTextField (editor))
+        {
+            if (action.kind == Kind::type)
+                field->setText (action.text, true);
+            else
+                field->keyPressed (juce::KeyPress (action.kind == Kind::pressReturn ? juce::KeyPress::returnKey : juce::KeyPress::escapeKey));
+        }
+        else
+        {
+            std::puts ("no text field is showing");
+        }
+        return;
+    }
+
+    auto* target = editor.getComponentAt (action.from);
+    if (target == nullptr)
+        return;
+
+    for (auto* c = target; c != nullptr; c = c->getParentComponent())
+        if (auto* field = dynamic_cast<juce::TextEditor*> (c))
+            lastClickedField = field;
+
+    const bool command = action.kind == Kind::cmdClick;
+
+    target->mouseEnter (makeEvent (*target, editor, action.from, action.from, false, false));
+    target->mouseMove (makeEvent (*target, editor, action.from, action.from, false, false));
+
+    if (action.kind == Kind::hover)
+        return;
+
+    target->mouseDown (makeEvent (*target, editor, action.from, action.from, true, false, command));
+
+    if (action.kind == Kind::drag || action.kind == Kind::hold)
+    {
+        for (int i = 1; i <= 8; ++i)
+            target->mouseDrag (makeEvent (*target, editor, action.from + (action.to - action.from) * ((float) i / 8.0f), action.from, true, true));
+
+        if (action.kind == Kind::hold)
+            return;
+
+        target->mouseUp (makeEvent (*target, editor, action.to, action.from, false, true));
+    }
+    else
+    {
+        target->mouseUp (makeEvent (*target, editor, action.from, action.from, false, false, command));
+
+        if (action.kind == Kind::doubleClick)
+        {
+            // JUCE delivers the second down/up pair and then mouseDoubleClick
+            target->mouseDown (makeEvent (*target, editor, action.from, action.from, true, false, false, 2));
+            target->mouseUp (makeEvent (*target, editor, action.from, action.from, false, false, false, 2));
+            target->mouseDoubleClick (makeEvent (*target, editor, action.from, action.from, false, false, false, 2));
+        }
+    }
 }
 
 juce::Point<float> parsePoint (const juce::StringArray& tokens, int first)
@@ -148,9 +205,8 @@ int main (int argc, char** argv)
     float scale = 1.0f;
     bool openBrowser = false, bench = false;
     juce::StringPairArray uiProps, paramValues;
-    std::vector<MouseAction> actions;
+    std::vector<Action> actions;
     juce::StringArray saveNames;
-    juce::String typedText;
 
     for (int i = 2; i < argc; ++i)
     {
@@ -168,14 +224,17 @@ int main (int argc, char** argv)
                                                        next.fromFirstOccurrenceOf ("=", false, false)); ++i; }
         else if (arg == "--browser") { openBrowser = true; }
         else if (arg == "--save")    { saveNames.add (next); ++i; }
-        else if (arg == "--type")    { typedText = next; ++i; }
-        else if (arg == "--hover" || arg == "--click" || arg == "--drag" || arg == "--hold")
+        else if (arg == "--type")    { actions.push_back ({ Action::Kind::type, {}, {}, next }); ++i; }
+        else if (arg == "--return")  { actions.push_back ({ Action::Kind::pressReturn, {}, {}, {} }); }
+        else if (arg == "--escape")  { actions.push_back ({ Action::Kind::pressEscape, {}, {}, {} }); }
+        else if (arg == "--hover" || arg == "--click" || arg == "--cmdclick" || arg == "--dblclick" || arg == "--drag" || arg == "--hold")
         {
             const auto tokens = juce::StringArray::fromTokens (next, ",", "");
             const auto from = parsePoint (tokens, 0);
-            actions.push_back ({ arg == "--hover" ? MouseAction::Kind::hover : arg == "--click" ? MouseAction::Kind::click
-                                 : arg == "--drag" ? MouseAction::Kind::drag : MouseAction::Kind::hold,
-                                 from, tokens.size() >= 4 ? parsePoint (tokens, 2) : from });
+            const auto kind = arg == "--hover" ? Action::Kind::hover : arg == "--click" ? Action::Kind::click
+                            : arg == "--cmdclick" ? Action::Kind::cmdClick : arg == "--dblclick" ? Action::Kind::doubleClick
+                            : arg == "--drag" ? Action::Kind::drag : Action::Kind::hold;
+            actions.push_back ({ kind, from, tokens.size() >= 4 ? parsePoint (tokens, 2) : from, {} });
             ++i;
         }
         else if (arg == "--silent")  { silent = true; }
@@ -231,19 +290,15 @@ int main (int argc, char** argv)
         pumpMessages (60);
     }
 
-    if (typedText.isNotEmpty())
-    {
-        if (auto* field = findTextEditor (*editor))
-            field->setText (typedText, true);
-
-        pumpMessages (60);
-    }
-
     for (const auto& action : actions)
     {
         perform (*editor, action);
 
-        if (action.kind != MouseAction::Kind::hover)
+        if (action.kind == Action::Kind::type)
+        {
+            pumpMessages (60);
+        }
+        else if (action.kind != Action::Kind::hover)
         {
             pumpAudio (proc, 4);
             pumpMessages (400);   // let reorder animations and async parameter callbacks settle

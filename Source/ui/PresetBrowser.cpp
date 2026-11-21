@@ -12,6 +12,21 @@ constexpr float kCategoryH = 30.0f;
 constexpr float kCorner = 18.0f;
 constexpr const char* kAll = "All";
 constexpr const char* kUser = "User";
+constexpr float kTitleH = 62.0f;
+constexpr float kFadeH = 22.0f;
+constexpr int kFadeSteps = 32;
+
+void styleField (juce::TextEditor& field, int maxChars)
+{
+    field.setMultiLine (false);
+    field.setReturnKeyStartsNewLine (false);
+    field.setPopupMenuEnabled (false);
+    field.setSelectAllWhenFocused (true);
+    field.setInputRestrictions (maxChars);
+    field.setFont (sansFont (13.2f, 0, 0.02f));
+    field.setIndents (0, 0);
+    field.setJustification (juce::Justification::centredLeft);
+}
 
 void drawCross (juce::Graphics& g, juce::Point<float> c, float size, float thickness)
 {
@@ -26,18 +41,36 @@ PresetBrowser::PresetBrowser (PresetManager& pm) : presets (pm)
     setWantsKeyboardFocus (true);
     setTitle ("Preset browser");
 
-    nameField.setMultiLine (false);
-    nameField.setReturnKeyStartsNewLine (false);
-    nameField.setPopupMenuEnabled (false);
-    nameField.setSelectAllWhenFocused (true);
-    nameField.setInputRestrictions (48);
-    nameField.setFont (sansFont (13.2f, 0, 0.02f));
-    nameField.setIndents (0, 0);
-    nameField.setJustification (juce::Justification::centredLeft);
+    styleField (nameField, 48);
     nameField.setTextToShowWhenEmpty (juce::String::fromUTF8 ("Save the current sound as\xe2\x80\xa6"), col::dusk);
     nameField.setTitle ("New preset name");
     nameField.addListener (this);
     addAndMakeVisible (nameField);
+
+    styleField (searchField, 32);
+    searchField.setFont (sansFont (12.6f, 0, 0.02f));
+    searchField.setTextToShowWhenEmpty ("Search", col::dusk);
+    searchField.setTitle ("Search presets");
+    searchField.addListener (this);
+    searchField.onKey = [this] (const juce::KeyPress& key)
+    {
+        // the arrows keep walking the list while the search field has the focus
+        if (key == juce::KeyPress::upKey)   { stepSelection (-1); return true; }
+        if (key == juce::KeyPress::downKey) { stepSelection (1);  return true; }
+        return false;
+    };
+    addAndMakeVisible (searchField);
+
+    // alpha ramp, opaque in the first row and clear in the last
+    fadeMask = juce::Image (juce::Image::SingleChannel, 1, kFadeSteps, true, juce::SoftwareImageType());
+    {
+        juce::Image::BitmapData data (fadeMask, juce::Image::BitmapData::writeOnly);
+        for (int y = 0; y < kFadeSteps; ++y)
+        {
+            const float t = 1.0f - (float) y / (float) (kFadeSteps - 1);
+            *data.getPixelPointer (0, y) = (juce::uint8) juce::roundToInt (255.0f * t * t * (3.0f - 2.0f * t));
+        }
+    }
 
     presets.addChangeListener (this);
     refresh();
@@ -47,12 +80,15 @@ PresetBrowser::~PresetBrowser()
 {
     presets.removeChangeListener (this);
     nameField.removeListener (this);
+    searchField.removeListener (this);
 }
 
 void PresetBrowser::open()
 {
     armedDeleteRow = -1;
     status.clear();
+    searchField.setText ({}, false);
+    searchText.clear();
     refresh();
 
     for (int i = 0; i < (int) rows.size(); ++i)
@@ -84,22 +120,33 @@ void PresetBrowser::refresh()
 {
     const auto& entries = presets.getEntries();
 
+    bool anyUser = false;
+    for (const auto& e : entries)
+        anyUser = anyUser || ! e.isFactory;
+
     categories.clear();
     categories.add (kAll);
     for (const auto& c : presets.getCategories())
         if (c != kUser)
             categories.add (c);
-    categories.add (kUser);
+    if (anyUser)
+        categories.add (kUser);      // only listed once there is something in it
 
     if (! categories.contains (selectedCategory))
         selectedCategory = kAll;
 
     categoryCounts.assign ((size_t) categories.size(), 0);
     rows.clear();
+    totalEntries = (int) entries.size();
 
     for (int i = 0; i < (int) entries.size(); ++i)
     {
         const auto& e = entries[(size_t) i];
+
+        // the search looks at name and note, and narrows whatever category is selected
+        if (searchText.isNotEmpty() && ! e.name.containsIgnoreCase (searchText) && ! e.note.containsIgnoreCase (searchText))
+            continue;
+
         const auto category = e.isFactory ? e.category : juce::String (kUser);
 
         ++categoryCounts[0];
@@ -184,10 +231,12 @@ void PresetBrowser::resized()
                 .withCentre (b.getCentre());
 
     auto inner = panel;
-    auto titleRow = inner.removeFromTop (62.0f);
+    auto titleRow = inner.removeFromTop (kTitleH);
     auto footer = inner.removeFromBottom (64.0f);
 
     closeBounds = juce::Rectangle<float> (28.0f, 28.0f).withCentre ({ titleRow.getRight() - 32.0f, titleRow.getCentreY() + 2.0f });
+    searchBounds = juce::Rectangle<float> (196.0f, 30.0f).withCentre ({ closeBounds.getX() - 14.0f - 98.0f, closeBounds.getCentreY() });
+    searchField.setBounds (searchBounds.withTrimmedLeft (31.0f).withTrimmedRight (26.0f).reduced (0.0f, 4.0f).toNearestInt());
 
     inner.removeFromTop (6.0f);
     inner.removeFromBottom (6.0f);
@@ -213,6 +262,9 @@ PresetBrowser::Hit PresetBrowser::hitAt (juce::Point<float> p) const
 
     if (saveBounds.contains (p))
         return { Zone::save, -1 };
+
+    if (searchText.isNotEmpty() && searchBounds.withTrimmedLeft (searchBounds.getWidth() - 28.0f).contains (p))
+        return { Zone::searchClear, -1 };
 
     if (categoryArea.contains (p))
     {
@@ -254,7 +306,7 @@ void PresetBrowser::mouseMove (const juce::MouseEvent& e)
             armedDeleteRow = -1;
 
         const bool clickable = hit.zone == Zone::close || hit.zone == Zone::category || hit.zone == Zone::row
-                               || hit.zone == Zone::rowDelete || hit.zone == Zone::save;
+                               || hit.zone == Zone::rowDelete || hit.zone == Zone::save || hit.zone == Zone::searchClear;
         setMouseCursor (clickable ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
         repaint();
     }
@@ -353,6 +405,11 @@ void PresetBrowser::mouseUp (const juce::MouseEvent& e)
             saveCurrent();
             break;
 
+        case Zone::searchClear:
+            searchField.setText ({}, false);
+            searchChanged();
+            break;
+
         case Zone::scrollbar:
         case Zone::panel:
         case Zone::none:
@@ -376,7 +433,39 @@ bool PresetBrowser::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::upKey)   { stepSelection (-1); return true; }
     if (key == juce::KeyPress::downKey) { stepSelection (1);  return true; }
 
+    // start typing anywhere in the browser: it goes to the search field
+    const auto character = key.getTextCharacter();
+    if (character > ' ' && ! key.getModifiers().isCommandDown() && ! key.getModifiers().isCtrlDown() && ! key.getModifiers().isAltDown())
+    {
+        searchField.setText (searchField.getText() + juce::String::charToString (character), false);
+        searchField.moveCaretToEnd();
+        searchChanged();
+
+        if (isShowing())
+            searchField.grabKeyboardFocus();
+
+        return true;
+    }
+
     return false;
+}
+
+void PresetBrowser::searchChanged()
+{
+    const auto text = searchField.getText().trim();
+    if (text != searchText)
+    {
+        searchText = text;
+        armedDeleteRow = -1;
+        scroll = 0.0f;
+        refresh();
+
+        for (int i = 0; i < (int) rows.size(); ++i)
+            if (rows[(size_t) i] == presets.getCurrentIndex())
+                ensureRowVisible (i);
+    }
+
+    repaint();
 }
 
 void PresetBrowser::stepSelection (int delta)
@@ -433,35 +522,71 @@ void PresetBrowser::focusOfChildComponentChanged (FocusChangeType)
     repaint();   // the name field's outline follows its focus
 }
 
-void PresetBrowser::textEditorTextChanged (juce::TextEditor&)
+void PresetBrowser::textEditorTextChanged (juce::TextEditor& field)
 {
+    if (&field == &searchField)
+    {
+        searchChanged();
+        return;
+    }
+
     status.clear();
     repaint();
 }
 
-void PresetBrowser::textEditorReturnKeyPressed (juce::TextEditor&)
+void PresetBrowser::textEditorReturnKeyPressed (juce::TextEditor& field)
 {
-    saveCurrent();
+    if (&field != &searchField)
+    {
+        saveCurrent();
+        return;
+    }
+
+    // Return in the search field takes the top match
+    if (! rows.empty() && rows.front() != presets.getCurrentIndex())
+    {
+        presets.loadPreset (rows.front());
+        refresh();
+        ensureRowVisible (0);
+    }
 }
 
-void PresetBrowser::textEditorEscapeKeyPressed (juce::TextEditor&)
+void PresetBrowser::textEditorEscapeKeyPressed (juce::TextEditor& field)
 {
-    if (nameField.isEmpty())
+    if (field.isEmpty())
     {
         close();
+        return;
     }
-    else
-    {
-        nameField.setText ({}, false);
-        status.clear();
-        repaint();
 
-        if (isShowing())
-            grabKeyboardFocus();
-    }
+    field.setText ({}, false);
+
+    if (&field == &searchField)
+        searchChanged();
+
+    status.clear();
+    repaint();
+
+    if (isShowing())
+        grabKeyboardFocus();
 }
 
 //==============================================================================
+void PresetBrowser::paintPanelBackground (juce::Graphics& g)
+{
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff211c40), panel.getX(), panel.getY(),
+                                             juce::Colour (0xff151229), panel.getX(), panel.getBottom(), false));
+    g.fillRoundedRectangle (panel, kCorner);
+
+    g.saveState();
+    juce::Path clip;
+    clip.addRoundedRectangle (panel, kCorner);
+    g.reduceClipRegion (clip);
+    fillGlow (g, { panel.getX() + 60.0f, panel.getY() - 10.0f }, 300.0f, col::lavender.withAlpha (0.15f));
+    fillGlow (g, { panel.getRight() - 40.0f, panel.getBottom() + 20.0f }, 300.0f, col::rose.withAlpha (0.10f));
+    g.restoreState();
+}
+
 void PresetBrowser::paint (juce::Graphics& g)
 {
     // scrim
@@ -469,62 +594,112 @@ void PresetBrowser::paint (juce::Graphics& g)
 
     // panel
     fillGlow (g, panel.getCentre().translated (0.0f, 30.0f), panel.getWidth() * 0.75f, juce::Colours::black.withAlpha (0.55f));
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff211c40), panel.getX(), panel.getY(),
-                                             juce::Colour (0xff151229), panel.getX(), panel.getBottom(), false));
-    g.fillRoundedRectangle (panel, kCorner);
-
-    {
-        g.saveState();
-        juce::Path clip;
-        clip.addRoundedRectangle (panel, kCorner);
-        g.reduceClipRegion (clip);
-        fillGlow (g, { panel.getX() + 60.0f, panel.getY() - 10.0f }, 300.0f, col::lavender.withAlpha (0.15f));
-        fillGlow (g, { panel.getRight() - 40.0f, panel.getBottom() + 20.0f }, 300.0f, col::rose.withAlpha (0.10f));
-        g.restoreState();
-    }
+    paintPanelBackground (g);
 
     g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.2f), 0.0f, panel.getY(),
                                              juce::Colours::white.withAlpha (0.05f), 0.0f, panel.getBottom(), false));
     g.drawRoundedRectangle (panel.reduced (0.5f), kCorner, 1.0f);
 
-    // title row
-    {
-        const auto titleRow = panel.withHeight (62.0f);
-        const auto titleFont = serifFont (32.0f);
-        g.setColour (col::fog);
-        g.setFont (titleFont);
-        g.drawText ("Presets", titleRow.withTrimmedLeft (28.0f).translated (0.0f, 3.0f), juce::Justification::centredLeft, false);
-
-        const float tx = titleRow.getX() + 28.0f + textWidth (titleFont, "Presets") + 16.0f;
-        const juce::Rectangle<float> info (tx, titleRow.getY() + 9.0f, closeBounds.getX() - tx - 12.0f, titleRow.getHeight() - 6.0f);
-
-        if (status.isNotEmpty())
-        {
-            g.setColour (statusColour);
-            g.setFont (sansFont (11.6f, 1, 0.02f));
-            g.drawText (status, info, juce::Justification::centredRight, true);
-        }
-        else
-        {
-            const int total = categoryCounts.empty() ? 0 : categoryCounts[0];
-            g.setColour (col::dusk);
-            g.setFont (sansFont (11.2f, 0, 0.04f));
-            g.drawText (juce::String (total) + (total == 1 ? " sound" : " sounds"), info, juce::Justification::centredLeft, false);
-        }
-
-        const bool over = hover.zone == Zone::close;
-        g.setColour (juce::Colours::white.withAlpha (over ? 0.13f : 0.06f));
-        g.fillEllipse (closeBounds);
-        g.setColour (over ? col::fog : col::mist);
-        drawCross (g, closeBounds.getCentre(), 4.2f, 1.4f);
-
-        g.setColour (juce::Colours::white.withAlpha (0.07f));
-        g.fillRect (panel.getX() + 20.0f, titleRow.getBottom(), panel.getWidth() - 40.0f, 1.0f);
-    }
-
+    paintTitleRow (g);
     paintCategories (g);
     paintList (g);
     paintFooter (g);
+}
+
+void PresetBrowser::paintTitleRow (juce::Graphics& g)
+{
+    const auto titleRow = panel.withHeight (kTitleH);
+    const auto titleFont = serifFont (32.0f);
+    g.setColour (col::fog);
+    g.setFont (titleFont);
+    g.drawText ("Presets", titleRow.withTrimmedLeft (28.0f).translated (0.0f, 3.0f), juce::Justification::centredLeft, false);
+
+    const float tx = titleRow.getX() + 28.0f + textWidth (titleFont, "Presets") + 16.0f;
+    const juce::Rectangle<float> info (tx, titleRow.getY() + 9.0f, searchBounds.getX() - tx - 14.0f, titleRow.getHeight() - 6.0f);
+
+    if (status.isNotEmpty())
+    {
+        g.setColour (statusColour);
+        g.setFont (sansFont (11.6f, 1, 0.02f));
+        g.drawText (status, info, juce::Justification::centredLeft, true);
+    }
+    else
+    {
+        // where the current preset sits in the whole library, and how much of it the filters show
+        const int current = presets.getCurrentIndex();
+        auto text = current >= 0 && current < totalEntries
+                        ? juce::String (current + 1) + " / " + juce::String (totalEntries)
+                        : juce::String (totalEntries) + (totalEntries == 1 ? " sound" : " sounds");
+
+        if ((int) rows.size() != totalEntries)
+            text << juce::String::fromUTF8 ("   \xc2\xb7   ") << (int) rows.size() << " shown";
+
+        g.setColour (col::dusk.interpolatedWith (col::mist, 0.25f));
+        g.setFont (sansFont (11.4f, 0, 0.04f));
+        g.drawText (text, info, juce::Justification::centredLeft, true);
+    }
+
+    // search field: magnifier, text, and a clear cross while there is text
+    {
+        const float r = searchBounds.getHeight() * 0.5f;
+        const bool focused = searchField.hasKeyboardFocus (true);
+
+        g.setColour (col::ink.withAlpha (0.6f));
+        g.fillRoundedRectangle (searchBounds, r);
+        g.setColour (focused || searchText.isNotEmpty() ? col::lavender.withAlpha (0.7f) : juce::Colours::white.withAlpha (0.12f));
+        g.drawRoundedRectangle (searchBounds.reduced (0.5f), r, 1.0f);
+
+        const juce::Point<float> lens (searchBounds.getX() + 16.0f, searchBounds.getCentreY() - 0.8f);
+        g.setColour (focused || searchText.isNotEmpty() ? col::fog : col::mist);
+        g.drawEllipse (lens.x - 4.2f, lens.y - 4.2f, 8.4f, 8.4f, 1.3f);
+        g.drawLine (lens.x + 3.2f, lens.y + 3.2f, lens.x + 6.6f, lens.y + 6.6f, 1.5f);
+
+        if (searchText.isNotEmpty())
+        {
+            g.setColour (hover.zone == Zone::searchClear ? col::fog : col::dusk);
+            drawCross (g, { searchBounds.getRight() - 15.0f, searchBounds.getCentreY() }, 3.2f, 1.3f);
+        }
+    }
+
+    const bool over = hover.zone == Zone::close;
+    g.setColour (juce::Colours::white.withAlpha (over ? 0.13f : 0.06f));
+    g.fillEllipse (closeBounds);
+    g.setColour (over ? col::fog : col::mist);
+    drawCross (g, closeBounds.getCentre(), 4.2f, 1.4f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.07f));
+    g.fillRect (panel.getX() + 20.0f, titleRow.getBottom(), panel.getWidth() - 40.0f, 1.0f);
+}
+
+void PresetBrowser::paintListFades (juce::Graphics& g)
+{
+    // Where the list is cut off, the panel is painted again through an alpha ramp, so rows
+    // melt into exactly the background they scroll under. The fade shrinks to nothing at
+    // either end of the list.
+    const float top = kFadeH * juce::jlimit (0.0f, 1.0f, scroll / kFadeH);
+    const float bottom = kFadeH * juce::jlimit (0.0f, 1.0f, (maxScroll() - scroll) / kFadeH);
+    const auto area = listArea.withTrimmedRight (8.0f);      // the scrollbar keeps its full length
+
+    const auto band = [&] (float height, bool atTop)
+    {
+        if (height < 1.0f)
+            return;
+
+        const auto transform = atTop
+            ? juce::AffineTransform::scale (area.getWidth(), height / (float) kFadeSteps).translated (area.getX(), area.getY())
+            : juce::AffineTransform::scale (area.getWidth(), -height / (float) kFadeSteps).translated (area.getX(), area.getBottom());
+
+        g.saveState();
+        g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
+        g.reduceClipRegion (atTop ? area.withHeight (height).getSmallestIntegerContainer()
+                                  : area.withTop (area.getBottom() - height).getSmallestIntegerContainer());
+        g.reduceClipRegion (fadeMask, transform);
+        paintPanelBackground (g);
+        g.restoreState();
+    };
+
+    band (top, true);
+    band (bottom, false);
 }
 
 void PresetBrowser::paintCategories (juce::Graphics& g)
@@ -573,15 +748,19 @@ void PresetBrowser::paintList (juce::Graphics& g)
 
     if (rows.empty())
     {
+        const bool searching = searchText.isNotEmpty();
         g.setColour (col::dusk);
         g.setFont (serifFont (20.0f));
-        g.drawText (selectedCategory == kUser ? "Nothing saved yet" : "Nothing here yet", listArea.withTrimmedBottom (30.0f),
-                    juce::Justification::centred, false);
+        g.drawText (searching ? "No matches" : selectedCategory == kUser ? "Nothing saved yet" : "Nothing here yet",
+                    listArea.withTrimmedBottom (30.0f), juce::Justification::centred, false);
 
-        if (selectedCategory == kUser)
+        if (searching || selectedCategory == kUser)
         {
             g.setFont (sansFont (11.4f, 0, 0.02f));
-            g.drawText ("Name the current sound below to keep it.", listArea.withTrimmedTop (34.0f), juce::Justification::centred, false);
+            g.drawText (searching ? (selectedCategory == kAll ? juce::String ("Nothing has that in its name or note.")
+                                                              : "Nothing in " + selectedCategory + " has that in its name or note.")
+                                  : juce::String ("Name the current sound below to keep it."),
+                        listArea.withTrimmedTop (34.0f), juce::Justification::centred, false);
         }
         return;
     }
@@ -591,7 +770,7 @@ void PresetBrowser::paintList (juce::Graphics& g)
 
     const auto nameFont = sansFont (13.6f, 1, 0.02f);
     const auto noteFont = sansFont (11.3f, 0, 0.02f);
-    const auto tagFont = sansFont (8.8f, 1, 0.2f);
+    const auto tagFont = sansFont (9.2f, 1, 0.2f);
 
     const int first = juce::jmax (0, (int) (scroll / kRowH));
     const int last = juce::jmin ((int) rows.size() - 1, (int) ((scroll + listArea.getHeight()) / kRowH));
@@ -678,6 +857,8 @@ void PresetBrowser::paintList (juce::Graphics& g)
     }
 
     g.restoreState();
+
+    paintListFades (g);
 
     const auto thumb = thumbBounds();
     if (! thumb.isEmpty())

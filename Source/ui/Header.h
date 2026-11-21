@@ -55,6 +55,8 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     Zone zoneAt (juce::Point<float>) const;
     void setHover (Zone);
+    void postHoverHelp();
+    juce::String positionText() const;      // "12 / 39", empty when the state matches no preset
 
     PresetManager& presets;
     MeterView meters;

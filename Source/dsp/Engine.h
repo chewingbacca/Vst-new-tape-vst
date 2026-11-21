@@ -29,6 +29,9 @@ public:
     /** Clears all audio state (tails, envelopes) without reallocating. */
     void reset();
 
+    /** Host tempo, used by the tempo-synced delay times. Defaults to 120 BPM. Audio thread. */
+    void setTempo (double beatsPerMinute);
+
     /** Constant for a given sample rate; valid after prepare(). */
     int getLatencySamples() const;
 

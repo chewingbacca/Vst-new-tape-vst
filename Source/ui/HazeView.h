@@ -14,6 +14,7 @@
 //   Wall    heat, density, grain          Wash    size, bloom, lingering trails
 //   Glide   slow wavering displacement    Blur    bokeh edge -> fully melted
 //   Warmth  colour temperature            Mix     how much haze surrounds the dry line
+//   Freeze  (Wash freeze held) the picture cools, frosts at the edges and all but stops
 #pragma once
 
 #include "Theme.h"
@@ -52,6 +53,7 @@ private:
     static Rgb ramp (float position) noexcept;
 
     SwoonAudioProcessor& processor;
+    juce::RangedAudioParameter* washPower = nullptr;     // resolved once; the freeze only shows while the Wash is on
 
     // low-resolution light
     std::vector<float> light, trail, ribbon, ribbonTrail, vignette;
@@ -78,6 +80,7 @@ private:
     // smoothed inputs
     float low = 0.0f, mid = 0.0f, high = 0.0f, level = 0.0f;
     float wall = 0.5f, wash = 0.5f, glide = 0.5f, blur = 0.5f, warmth = 0.5f, mix = 1.0f, bypassed = 0.0f;
+    float frozen = 0.0f;                         // 0..1, eased: the Wash freeze is being held
     bool firstFrame = true;
 
     double time = 0.0;

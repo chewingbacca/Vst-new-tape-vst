@@ -10,6 +10,7 @@ namespace
 constexpr float kHorizon = 0.57f;      // resting height of the ribbons (0 = top)
 constexpr float kRibbonSwing = 0.27f;  // ribbon excursion as a fraction of the height
 constexpr float kTwoPi = juce::MathConstants<float>::twoPi;
+constexpr float kCornerReserve = 170.0f;   // bottom-right corner kept clear of text (the page puts the freeze button there)
 
 struct Orb
 {
@@ -65,6 +66,9 @@ HazeView::HazeView (SwoonAudioProcessor& p)
     // Not opaque on purpose: under the editor's fractional scale an opaque child leaves a
     // one-pixel seam along its edges. The parent skips its own fill beneath us instead.
     setInterceptsMouseClicks (false, false);
+
+    if (const auto* powerDef = powerParamFor (Module::Wash))
+        washPower = &processor.getParam (powerDef->index);
 
     juce::Random random (0x5300a11);
 
@@ -128,7 +132,7 @@ void HazeView::advance()
     const auto now = juce::Time::getMillisecondCounter();
     const float dt = firstFrame ? 0.033f : juce::jlimit (0.005f, 0.1f, (float) (now - lastTick) * 0.001f);
     lastTick = now;
-    time += (double) dt;
+    time += (double) dt * (1.0 - 0.93 * (double) frozen);    // held: the drift all but stops
     ++frameCounter;
 
     readInputs();
@@ -137,7 +141,7 @@ void HazeView::advance()
 
     // the un-blurred signal trace: fades out as Blur comes up
     {
-        const float temperature = (warmth - 0.5f) * 0.5f;
+        const float temperature = (warmth - 0.5f) * 0.5f - 0.2f * frozen;
         const auto pastel = [] (Rgb c) { return Rgb { c.r + (1.0f - c.r) * 0.35f, c.g + (1.0f - c.g) * 0.35f, c.b + (1.0f - c.b) * 0.35f }; };
 
         traceAlpha = std::pow (1.0f - blur, 1.6f) * (0.25f + 0.75f * juce::jmin (1.0f, level * 1.8f)) * (1.0f - 0.5f * bypassed) * 0.62f;
@@ -151,7 +155,7 @@ void HazeView::advance()
         }
     }
 
-    if ((frameCounter & 1) == 0)
+    if ((frameCounter & 1) == 0 && frozen < 0.6f)     // held: even the grain stands still
     {
         grainX = (frameCounter * 37) & (kGrainSize - 1);
         grainY = (frameCounter * 59) & (kGrainSize - 1);
@@ -166,7 +170,19 @@ void HazeView::readInputs()
 {
     const auto& viz = processor.getVizData();
 
-    const float attack = firstFrame ? 1.0f : 0.5f, release = firstFrame ? 1.0f : 0.1f;
+    // the Wash freeze, eased in and out (it only means something while the Wash is on)
+    {
+        const bool held = processor.getParam (P::washFreeze).getValue() > 0.5f
+                          && (washPower == nullptr || washPower->getValue() > 0.5f);
+
+        frozen += ((held ? 1.0f : 0.0f) - frozen) * (firstFrame ? 1.0f : 0.12f);
+        if (frozen < 0.001f)
+            frozen = 0.0f;
+    }
+
+    // while held, the light-forms keep the level they had: nothing new comes in
+    const float thaw = firstFrame ? 1.0f : 1.0f - frozen;
+    const float attack = (firstFrame ? 1.0f : 0.5f) * thaw, release = (firstFrame ? 1.0f : 0.1f) * thaw;
     low   = follow (low,   shapeLevel (viz.bandLow.load (std::memory_order_relaxed), 3.2f), attack, release);
     mid   = follow (mid,   shapeLevel (viz.bandMid.load (std::memory_order_relaxed), 4.2f), attack, release);
     high  = follow (high,  shapeLevel (viz.bandHigh.load (std::memory_order_relaxed), 11.0f), attack, release);
@@ -199,7 +215,7 @@ void HazeView::readInputs()
     // Wall squares the waveform off, like the fuzz does
     const float drive = 1.8f + 11.0f * wall * wall;
     const float step = (float) (kScopeShown - 1) / (float) (kW - 1);
-    const float smooth = firstFrame ? 1.0f : 0.5f;
+    const float smooth = (firstFrame ? 1.0f : 0.5f) * thaw;      // held: the ribbons keep their shape
     std::array<float, kW> shapedL, shapedR;
 
     for (int x = 0; x < kW; ++x)
@@ -226,7 +242,7 @@ void HazeView::readInputs()
 void HazeView::renderLight()
 {
     const float t = (float) time;
-    const float temperature = (warmth - 0.5f) * 0.5f;
+    const float temperature = (warmth - 0.5f) * 0.5f - 0.2f * frozen;
     const float presence = 0.25f + 0.75f * mix;
     const float sizeScale = 0.62f + 0.9f * wash;
     const float edge = 0.2f + 0.8f * blur;          // 0.2 = bokeh disc, 1 = fully soft
@@ -300,7 +316,7 @@ void HazeView::renderLight()
 
     // Wash: light lingers. Instant attack, slow release per pixel.
     {
-        const float decay = firstFrame ? 0.0f : 0.5f + 0.47f * wash;
+        const float decay = firstFrame ? 0.0f : juce::jmin (0.995f, 0.5f + 0.47f * wash + 0.5f * frozen);
         float* tr = trail.data();
         const size_t n = light.size();
 
@@ -346,7 +362,7 @@ void HazeView::renderLight()
             }
         }
 
-        const float decay = firstFrame ? 0.0f : 0.35f + 0.5f * wash;
+        const float decay = firstFrame ? 0.0f : juce::jmin (0.99f, 0.35f + 0.5f * wash + 0.6f * frozen);
         float* rt = ribbonTrail.data();
         float* tr = trail.data();
         float* out = light.data();          // reused as the composite the developer samples
@@ -366,6 +382,7 @@ void HazeView::developFrame()
     const float amplitude = glide * 5.5f;
     const float exposure = (0.72f + 0.95f * wall) * (1.0f - 0.5f * bypassed);
     const float grey = bypassed * 0.85f;
+    const float frost = frozen * (1.0f - 0.6f * bypassed);
 
     std::array<float, kH> shiftX;
     for (int y = 0; y < kH; ++y)
@@ -418,6 +435,16 @@ void HazeView::developFrame()
                 r += (lum - r) * grey;
                 g += (lum - g) * grey;
                 b += (lum * 1.08f - b) * grey;
+            }
+
+            if (frost > 0.0f)
+            {
+                // held: colours drain towards ice, and frost creeps in from the edges of the glass
+                const float lum = 0.3f * r + 0.5f * g + 0.2f * b;
+                const float rim = (1.0f - vig[x]) * frost;
+                r += (lum * 0.86f - r) * frost * 0.45f + rim * 0.42f;
+                g += (lum * 1.02f - g) * frost * 0.45f + rim * 0.62f;
+                b += (lum * 1.16f - b) * frost * 0.45f + rim * 0.74f;
             }
 
             // melt into the page colour towards the bottom edge
@@ -597,7 +624,7 @@ void HazeView::paint (juce::Graphics& g)
     {
         g.setColour (col::fog.withAlpha (0.96f));
         g.setFont (titleFont);
-        g.drawText (title, juce::Rectangle<float> (30.0f, h - 92.0f, w - 60.0f, 50.0f), juce::Justification::bottomLeft, true);
+        g.drawText (title, juce::Rectangle<float> (30.0f, h - 92.0f, w - 60.0f - kCornerReserve, 50.0f), juce::Justification::bottomLeft, true);
     }
 
     float x = 32.0f;
@@ -622,7 +649,7 @@ void HazeView::paint (juce::Graphics& g)
     {
         g.setColour (col::fog.withAlpha (0.62f));
         g.setFont (noteFont);
-        g.drawText (note, juce::Rectangle<float> (x, y - 0.5f, w - x - 30.0f, 16.0f), juce::Justification::centredLeft, true);
+        g.drawText (note, juce::Rectangle<float> (x, y - 0.5f, w - x - 30.0f - kCornerReserve, 16.0f), juce::Justification::centredLeft, true);
     }
 }
 

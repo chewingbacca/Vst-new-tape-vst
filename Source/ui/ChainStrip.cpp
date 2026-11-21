@@ -2,6 +2,7 @@
 
 #include "../PluginProcessor.h"
 #include "ParamControls.h"
+#include "StatusLine.h"
 
 namespace swoon::ui
 {
@@ -23,7 +24,7 @@ void drawChevron (juce::Graphics& g, juce::Point<float> c, float size, juce::Col
 void drawCaption (juce::Graphics& g, const juce::String& text, juce::Rectangle<float> area, juce::Justification just)
 {
     g.setColour (col::dusk);
-    g.setFont (sansFont (9.4f, 1, 0.22f));
+    g.setFont (sansFont (10.2f, 1, 0.2f));
     g.drawText (text, area, just, false);
 }
 } // namespace
@@ -60,6 +61,9 @@ void ChainStrip::bindPower (PowerState& state, Module module)
             {
                 state.on = nowOn;
                 repaint();
+
+                if (hoverHit != Hit::none)
+                    postHoverHelp();
             }
         });
     }
@@ -147,21 +151,37 @@ void ChainStrip::timerCallback()
 }
 
 //==============================================================================
-ChainStrip::Hit ChainStrip::hitTestAt (juce::Point<float> p, int& slot) const
+juce::Rectangle<float> ChainStrip::powerZone (juce::Rectangle<float> chip)
+{
+    // generous: the icon itself is 14 px, the target around it 40 x 30
+    return { chip.getCentreX() - 20.0f, chip.getBottom() - 31.0f, 40.0f, 30.0f };
+}
+
+ChainStrip::Hit ChainStrip::hitTestAt (juce::Point<float> p, int& slot, bool& onPower) const
 {
     slot = -1;
+    onPower = false;
 
     if (flipBounds.contains (p))
         return Hit::flip;
 
     if (tapeBounds.contains (p))
+    {
+        onPower = tapePower.attachment != nullptr && powerZone (tapeBounds).contains (p);
         return Hit::tape;
+    }
+
+    if (outputBounds.contains (p))
+        return Hit::output;
 
     for (int s = 0; s < kNumSlots; ++s)
     {
-        if (juce::Rectangle<float> (chipX[(size_t) s], chipArea.getY(), chipW, chipArea.getHeight()).contains (p))
+        const juce::Rectangle<float> chip (chipX[(size_t) s], chipArea.getY(), chipW, chipArea.getHeight());
+
+        if (chip.contains (p))
         {
             slot = s;
+            onPower = power[(size_t) s].attachment != nullptr && powerZone (chip).contains (p);
             return Hit::chip;
         }
     }
@@ -169,33 +189,95 @@ ChainStrip::Hit ChainStrip::hitTestAt (juce::Point<float> p, int& slot) const
     return Hit::none;
 }
 
-void ChainStrip::setHover (Hit hit, int slot)
+void ChainStrip::setHover (Hit hit, int slot, bool onPower)
 {
-    if (hit != hoverHit || slot != hoverSlot)
+    if (hit != hoverHit || slot != hoverSlot || onPower != hoverPower)
     {
         hoverHit = hit;
         hoverSlot = slot;
-        setMouseCursor (hit == Hit::chip ? juce::MouseCursor::DraggingHandCursor
-                        : hit == Hit::none ? juce::MouseCursor::NormalCursor : juce::MouseCursor::PointingHandCursor);
+        hoverPower = onPower;
+        setMouseCursor (onPower || hit == Hit::flip ? juce::MouseCursor::PointingHandCursor
+                        : hit == Hit::chip ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        postHoverHelp();
         repaint();
+    }
+}
+
+void ChainStrip::postHoverHelp()
+{
+    switch (hoverHit)
+    {
+        case Hit::flip:
+            postHelp (*this, "Fuzz / Wash order",
+                      "Fuzz into Wash is clear and defined; Wash into Fuzz is the smeared wall. Click to flip.",
+                      model.isWashAfterFuzz() ? "Fuzz > Wash" : "Wash > Fuzz");
+            break;
+
+        case Hit::chip:
+            if (hoverSlot >= 0)
+            {
+                const auto module = ChainModel::moduleForSlot (hoverSlot);
+                postHelp (*this, moduleName (module),
+                          hoverPower ? "Click to switch this module on or off."
+                                     : "Drag to move it in the chain. The power icon switches it on or off; double-click opens its controls.",
+                          juce::String (power[(size_t) hoverSlot].on ? "On" : "Off") + ", "
+                              + juce::String (model.positionOf (hoverSlot) + 1) + " of " + juce::String (kNumSlots));
+            }
+            break;
+
+        case Hit::tape:
+            postHelp (*this, "Tape", hoverPower ? "Click to switch the tape stage on or off."
+                                                : "Always after the chain. The power icon switches it on or off.",
+                      tapePower.on ? "On" : "Off");
+            break;
+
+        case Hit::output:
+            postHelp (*this, "Output", "Tilt, width, output level and the soft limiter. Always last.");
+            break;
+
+        case Hit::none:
+            clearHelp (*this);
+            break;
     }
 }
 
 void ChainStrip::mouseMove (const juce::MouseEvent& e)
 {
     int slot = -1;
-    const auto hit = hitTestAt (e.position, slot);
-    setHover (hit, slot);
+    bool onPower = false;
+    const auto hit = hitTestAt (e.position, slot, onPower);
+    setHover (hit, slot, onPower);
 }
 
 void ChainStrip::mouseExit (const juce::MouseEvent&)
 {
-    setHover (Hit::none, -1);
+    setHover (Hit::none, -1, false);
+}
+
+void ChainStrip::visibilityChanged()
+{
+    // a page switch hides the strip without a mouse-exit: do not come back with a stale hover
+    if (! isVisible())
+    {
+        hoverHit = Hit::none;
+        hoverSlot = -1;
+        hoverPower = false;
+    }
+}
+
+void ChainStrip::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    int slot = -1;
+    bool onPower = false;
+
+    if (hitTestAt (e.position, slot, onPower) == Hit::chip && ! onPower && slot >= 0 && onOpenModule != nullptr)
+        onOpenModule (ChainModel::moduleForSlot (slot));
 }
 
 void ChainStrip::mouseDown (const juce::MouseEvent& e)
 {
-    pressHit = e.mods.isPopupMenu() ? Hit::none : hitTestAt (e.position, pressSlot);
+    pressPower = false;
+    pressHit = e.mods.isPopupMenu() ? Hit::none : hitTestAt (e.position, pressSlot, pressPower);
     dragging = false;
 
     if (pressHit == Hit::chip)
@@ -259,16 +341,21 @@ void ChainStrip::mouseUp (const juce::MouseEvent& e)
     }
     else
     {
+        // Power switches only when both press and release land on the power icon:
+        // a click on the rest of a chip, or a drag that never got going, changes nothing.
         int upSlot = -1;
-        const auto upHit = hitTestAt (e.position, upSlot);
+        bool upPower = false;
+        const auto upHit = hitTestAt (e.position, upSlot, upPower);
 
         if (hit == Hit::flip && upHit == Hit::flip)
             model.flipFuzzWash();
-        else if (hit == Hit::tape && upHit == Hit::tape)
+        else if (hit == Hit::tape && upHit == Hit::tape && pressPower && upPower)
             togglePower (tapePower);
-        else if (hit == Hit::chip && upHit == Hit::chip && upSlot == slot)
+        else if (hit == Hit::chip && upHit == Hit::chip && upSlot == slot && pressPower && upPower)
             togglePower (power[(size_t) slot]);
     }
+
+    postHoverHelp();
 
     pressSlot = -1;
     repaint();
@@ -338,7 +425,7 @@ void ChainStrip::drawFlip (juce::Graphics& g)
 }
 
 void ChainStrip::drawChip (juce::Graphics& g, juce::Rectangle<float> b, const juce::String& name, juce::Colour colour,
-                           bool on, bool hasPower, bool fixed, bool hovered, bool lifted)
+                           bool on, bool hasPower, bool fixed, bool hovered, bool powerHovered, bool lifted)
 {
     const float corner = 11.0f;
 
@@ -377,7 +464,16 @@ void ChainStrip::drawChip (juce::Graphics& g, juce::Rectangle<float> b, const ju
     const juce::Rectangle<float> glyph (b.getCentreX() - 7.0f, b.getBottom() - 22.0f, 14.0f, 14.0f);
     if (hasPower)
     {
-        PowerButton::drawGlyph (g, glyph.expanded (5.0f), on ? colour : col::dusk, on, 1.4f);
+        if (powerHovered && ! lifted)
+        {
+            // the power target lights up under the pointer
+            g.setColour (juce::Colours::white.withAlpha (0.09f));
+            g.fillEllipse (glyph.expanded (6.5f));
+            g.setColour ((on ? colour : col::mist).withAlpha (0.5f));
+            g.drawEllipse (glyph.expanded (6.0f), 1.0f);
+        }
+
+        PowerButton::drawGlyph (g, glyph.expanded (5.0f), on ? colour : (powerHovered ? col::fog : col::dusk), on, 1.4f);
     }
     else
     {
@@ -400,8 +496,8 @@ void ChainStrip::paint (juce::Graphics& g)
                  juce::Justification::centredLeft);
 
     g.setColour (col::dusk.withAlpha (0.8f));
-    g.setFont (sansFont (10.2f, 0, 0.02f));
-    g.drawText (juce::String::fromUTF8 ("drag to reorder  \xc2\xb7  click to switch on / off"), chipArea.withY (0.0f).withHeight (kCaptionH - 6.0f),
+    g.setFont (sansFont (10.6f, 0, 0.02f));
+    g.drawText (juce::String::fromUTF8 ("drag to reorder  \xc2\xb7  power icon switches on / off"), chipArea.withY (0.0f).withHeight (kCaptionH - 6.0f),
                 juce::Justification::centredRight, false);
 
     drawFlip (g);
@@ -422,8 +518,8 @@ void ChainStrip::paint (juce::Graphics& g)
     }
 
     drawChip (g, tapeBounds, "Tape", moduleColour (Module::Tape), tapePower.on, tapePower.attachment != nullptr, true,
-              hoverHit == Hit::tape, false);
-    drawChip (g, outputBounds, "Output", moduleColour (Module::Output), true, false, true, false, false);
+              hoverHit == Hit::tape, hoverHit == Hit::tape && hoverPower, false);
+    drawChip (g, outputBounds, "Output", moduleColour (Module::Output), true, false, true, false, false, false);
 
     // reorderable chips; the lifted one is drawn last
     for (int pass = 0; pass < 2; ++pass)
@@ -437,7 +533,7 @@ void ChainStrip::paint (juce::Graphics& g)
             const auto module = ChainModel::moduleForSlot (slot);
             drawChip (g, { chipX[(size_t) slot], chipArea.getY(), chipW, chipArea.getHeight() }, moduleName (module),
                       moduleColour (module), power[(size_t) slot].on, power[(size_t) slot].attachment != nullptr, false,
-                      hoverHit == Hit::chip && hoverSlot == slot, lifted);
+                      hoverHit == Hit::chip && hoverSlot == slot, hoverHit == Hit::chip && hoverSlot == slot && hoverPower, lifted);
         }
     }
 }

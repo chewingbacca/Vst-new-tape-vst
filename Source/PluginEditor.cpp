@@ -4,7 +4,7 @@ namespace
 {
 using namespace swoon::ui;
 
-constexpr float kMinScale = 0.7f, kMaxScale = 1.7f;
+constexpr float kMinScale = 0.8f, kMaxScale = 1.7f;      // 800 x 528 ... 1700 x 1122
 const juce::Identifier kPageId ("page"), kWidthId ("width"), kHeightId ("height");
 } // namespace
 
@@ -24,18 +24,27 @@ SwoonAudioProcessorEditor::SwoonAudioProcessorEditor (SwoonAudioProcessor& p)
     content.addAndMakeVisible (sleeve);
     content.addChildComponent (machine);
     content.addAndMakeVisible (header);
+    content.addAndMakeVisible (statusLine);
     content.addChildComponent (browser);
     addAndMakeVisible (content);
 
     content.setBounds (0, 0, kBaseW, kBaseH);
     header.setBounds (0, 0, kBaseW, kHeaderH);
-    sleeve.setBounds (0, kHeaderH, kBaseW, kBaseH - kHeaderH);
+    sleeve.setBounds (0, kHeaderH, kBaseW, kBaseH - kHeaderH - kStatusH);
     machine.setBounds (sleeve.getBounds());
     browser.setBounds (sleeve.getBounds());
+    statusLine.setBounds (0, kBaseH - kStatusH, kBaseW, kStatusH);
 
     header.onPageSelected = [this] (int newPage) { setPage (newPage); };
     header.onPresetNameClicked = [this] { setBrowserOpen (! browser.isVisible()); };
     browser.onClose = [this] { setBrowserOpen (false); };
+
+    // double-click a chip on the sleeve: go to that module's panel
+    sleeve.getChain().onOpenModule = [this] (swoon::Module module)
+    {
+        setPage (1);
+        machine.spotlight (module);
+    };
 
     const auto state = proc.getUiState();
     setPage (juce::jlimit (0, 1, (int) state.getProperty (kPageId, 0)));
@@ -99,6 +108,19 @@ void SwoonAudioProcessorEditor::setPage (int newPage)
     machine.setVisible (page == 1);
     header.setPage (page);
     proc.getUiState().setProperty (kPageId, page, nullptr);
+
+    statusLine.clearHint();
+    updateIdleHint();
+}
+
+void SwoonAudioProcessorEditor::showHelp (const juce::String& title, const juce::String& text, const juce::String& value)
+{
+    statusLine.setHint (title, text, value);
+}
+
+void SwoonAudioProcessorEditor::clearHelp()
+{
+    statusLine.clearHint();
 }
 
 void SwoonAudioProcessorEditor::setBrowserOpen (bool shouldBeOpen)
@@ -109,6 +131,16 @@ void SwoonAudioProcessorEditor::setBrowserOpen (bool shouldBeOpen)
         browser.setVisible (false);
 
     header.setBrowserOpen (shouldBeOpen);
+    updateIdleHint();
+}
+
+void SwoonAudioProcessorEditor::updateIdleHint()
+{
+    statusLine.setIdleText (browser.isVisible()
+        ? "Up / Down steps through the list  -  type to search  -  Esc closes"
+        : page == 0
+            ? "Drag a knob up or down  -  Shift for fine  -  double-click to reset  -  click a value to type it"
+            : "Drag up or down  -  Shift for fine  -  double-click to reset  -  click a readout (or Ctrl/Cmd-click a knob) to type a value");
 }
 
 //==============================================================================

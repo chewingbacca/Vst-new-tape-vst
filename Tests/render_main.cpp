@@ -30,7 +30,7 @@ namespace
 struct Options
 {
     std::string command, out, signal = "strum", preset, solo, writeInput;
-    double sr = 48000.0, seconds = 10.0, tail = 4.0;
+    double sr = 48000.0, seconds = 10.0, tail = 4.0, bpm = 120.0;
     int block = 256;
     float levelDb = -12.0f;
     bool bare = false;
@@ -191,6 +191,7 @@ int cmdRender (const Options& o)
 
     Engine engine;
     engine.prepare (o.sr, o.block);
+    engine.setTempo (o.bpm);
     const auto t0 = std::chrono::steady_clock::now();
     processAll (engine, s, pv, o.block, &o);
     const double elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
@@ -266,6 +267,7 @@ int main (int argc, char** argv)
         else if (a == "--block") o.block = std::max (1, std::atoi (next().c_str()));
         else if (a == "--seconds") o.seconds = std::atof (next().c_str());
         else if (a == "--tail") o.tail = std::atof (next().c_str());
+        else if (a == "--bpm") o.bpm = std::atof (next().c_str());
         else if (a == "--level") o.levelDb = static_cast<float> (std::atof (next().c_str()));
         else if (a == "--preset") o.preset = next();
         else if (a == "--solo") o.solo = next();

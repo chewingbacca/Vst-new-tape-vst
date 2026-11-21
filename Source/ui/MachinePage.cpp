@@ -127,6 +127,16 @@ void ModulePanel::setBadge (const juce::String& text)
     }
 }
 
+void ModulePanel::setHighlight (float amount)
+{
+    amount = juce::jlimit (0.0f, 1.0f, amount);
+    if (! juce::approximatelyEqual (amount, highlight))
+    {
+        highlight = amount;
+        repaint();
+    }
+}
+
 void ModulePanel::updateEnabledLook()
 {
     const bool on = power == nullptr || power->isOn();
@@ -155,6 +165,14 @@ void ModulePanel::paint (juce::Graphics& g)
         g.restoreState();
     }
 
+    if (highlight > 0.0f)
+    {
+        g.setColour (accent.withAlpha (0.10f * highlight));
+        g.fillRoundedRectangle (b, 12.0f);
+        g.setColour (accent.withAlpha (0.9f * highlight));
+        g.drawRoundedRectangle (b.reduced (0.75f), 12.0f, 1.5f);
+    }
+
     auto header = b.withHeight ((float) kHeaderH).reduced (11.0f, 0.0f).translated (0.0f, 1.0f);
     if (power != nullptr)
         header.removeFromLeft (20.0f);
@@ -166,7 +184,7 @@ void ModulePanel::paint (juce::Graphics& g)
     if (badge.isNotEmpty() && header.getWidth() - textWidth (titleFont, titleText) > 40.0f)
     {
         g.setColour (col::dusk);
-        g.setFont (sansFont (9.6f, 1, 0.16f));
+        g.setFont (sansFont (10.0f, 1, 0.16f));
         g.drawText (badge, header.removeFromRight (34.0f), juce::Justification::centredRight, false);
     }
 
@@ -221,7 +239,34 @@ MachinePage::MachinePage (SwoonAudioProcessor& processor, ChainModel& m) : model
 
 MachinePage::~MachinePage()
 {
+    stopTimer();
     model.removeChangeListener (this);
+}
+
+void MachinePage::spotlight (Module module)
+{
+    for (auto& panel : panels)
+        panel->setHighlight (panel->getModule() == module ? 1.0f : 0.0f);
+
+    startTimerHz (30);
+}
+
+void MachinePage::timerCallback()
+{
+    bool anyLit = false;
+
+    for (auto& panel : panels)
+    {
+        const float h = panel->getHighlight();
+        if (h > 0.0f)
+        {
+            panel->setHighlight (h < 0.03f ? 0.0f : h * 0.93f);
+            anyLit = anyLit || panel->getHighlight() > 0.0f;
+        }
+    }
+
+    if (! anyLit)
+        stopTimer();
 }
 
 void MachinePage::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -300,7 +345,7 @@ void MachinePage::resized()
         }
     }
 
-    const auto area = getLocalBounds().reduced (12, 0).withTrimmedTop (10).withTrimmedBottom (12);
+    const auto area = getLocalBounds().reduced (12, 0).withTrimmedTop (10).withTrimmedBottom (8);
     const float rowH = ((float) area.getHeight() - (float) (kGap * (kPanelRows - 1))) / (float) kPanelRows;
 
     for (int row = 0; row < rows; ++row)

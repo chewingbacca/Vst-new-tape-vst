@@ -1,6 +1,7 @@
 // The chain strip on the front page: the seven reorderable modules in their
-// current order (drag to reorder, click to switch on/off), the Fuzz/Wash flip
-// and the fixed Tape -> Output end stages.
+// current order, the Fuzz/Wash flip and the fixed Tape -> Output end stages.
+// Drag a chip to reorder; only its power icon switches it on or off (so a
+// fumbled drag can never mute a module); double-click opens its controls.
 #pragma once
 
 #include "ChainModel.h"
@@ -18,6 +19,9 @@ public:
     ChainStrip (SwoonAudioProcessor&, ChainModel&);
     ~ChainStrip() override;
 
+    /** Double-click on a chip: the editor shows that module on the machine page. */
+    std::function<void (Module)> onOpenModule;
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseMove (const juce::MouseEvent&) override;
@@ -25,9 +29,11 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void visibilityChanged() override;
 
 private:
-    enum class Hit { none, flip, chip, tape };
+    enum class Hit { none, flip, chip, tape, output };
 
     struct PowerState
     {
@@ -40,14 +46,16 @@ private:
 
     void layoutTargets (bool snap);
     float slotTargetX (int position) const;
-    Hit hitTestAt (juce::Point<float>, int& slot) const;
-    void setHover (Hit, int slot);
+    Hit hitTestAt (juce::Point<float>, int& slot, bool& onPower) const;
+    void setHover (Hit, int slot, bool onPower);
+    void postHoverHelp();
+    static juce::Rectangle<float> powerZone (juce::Rectangle<float> chip);
     void bindPower (PowerState&, Module);
     void togglePower (PowerState&);
 
     void drawFlip (juce::Graphics&);
     void drawChip (juce::Graphics&, juce::Rectangle<float>, const juce::String& name, juce::Colour colour,
-                   bool on, bool hasPower, bool fixed, bool hovered, bool lifted);
+                   bool on, bool hasPower, bool fixed, bool hovered, bool powerHovered, bool lifted);
 
     SwoonAudioProcessor& processor;
     ChainModel& model;
@@ -64,6 +72,7 @@ private:
     int hoverSlot = -1;
     Hit pressHit = Hit::none;
     int pressSlot = -1;
+    bool hoverPower = false, pressPower = false;
     bool dragging = false;
     float dragGrabOffset = 0.0f;
 

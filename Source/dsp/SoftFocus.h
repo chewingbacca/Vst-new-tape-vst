@@ -116,7 +116,8 @@ public:
     struct Params
     {
         bool on = true;
-        float timeMs = 250.0f;   // left delay; right is 1.52x
+        float timeMs = 250.0f;   // left delay
+        float rightRatio = 1.52f; // right delay = left x this (1.52 free-running, 1.5 when tempo-synced)
         float feedback = 0.35f;
         float detuneCents = 9.0f;
         float haze = 0.5f;
@@ -139,6 +140,8 @@ public:
         haze.prepare (fs);
         gate.prepare (fs);
         timeS.setTime (0.18f, fs);
+        ratioS.setTime (0.18f, fs);
+        ratioS.snap (kRightRatio);
         fbS.setTime (0.05f, fs);
         detuneS.setTime (0.05f, fs / kChunk);
         hazeS.setTime (0.05f, fs);
@@ -183,6 +186,7 @@ public:
         }
 
         timeS.target = std::clamp (p.timeMs, 40.0f, 900.0f) * 0.001f * fs;
+        ratioS.target = std::clamp (p.rightRatio, 1.0f, kRightRatio);
         fbS.target = gate.flushing ? 0.0f : std::clamp (p.feedback, 0.0f, 0.92f);
         detuneS.target = std::clamp (p.detuneCents, 0.0f, 50.0f);
         hazeS.target = clamp01 (p.haze);
@@ -240,7 +244,7 @@ public:
 
             // --- two long delays, cross-fed, filtered in the loop ---
             const float dL = delay[0].readCubic (std::max (4.0f, time));
-            const float dR = delay[1].readCubic (std::max (4.0f, time * kRightRatio));
+            const float dR = delay[1].readCubic (std::max (4.0f, time * ratioS.next()));
             const float fL = fbHp[0].hp (fbLp[0].lp (dL));
             const float fR = fbHp[1].hp (fbLp[1].lp (dR));
             // keep the loop honest: saturate gently on the way back in
@@ -279,7 +283,7 @@ private:
     Lfo lfo[4];
     ModuleGate gate;
     SmoothD timeS;
-    Smooth fbS, detuneS, hazeS, toneS;
+    Smooth fbS, detuneS, hazeS, toneS, ratioS;
     float fs = 48000.0f;
     bool first = true;
 };

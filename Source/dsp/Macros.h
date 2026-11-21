@@ -62,4 +62,14 @@ inline float tapeAgeOffset (float warmth) noexcept    { return (warmth - 0.5f) *
 inline float tiltOffset (float warmth) noexcept       { return -(warmth - 0.5f) * 0.9f; }
 inline float warmShelfDb (float warmth) noexcept      { return (warmth - 0.5f) * 5.0f; }
 
+// ---- tempo sync (Focus and Reverse) --------------------------------------------------------
+/** Sync choice -> time in ms at the given tempo. Choice 0 ("Free") returns freeMs. */
+inline float syncedMs (int choice, float bpm, float freeMs) noexcept
+{
+    static constexpr float beats[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f };
+    if (choice <= 0 || choice > 6)
+        return freeMs;
+    return beats[choice] * 60000.0f / std::clamp (bpm, 20.0f, 400.0f);
+}
+
 } // namespace swoon::macro

@@ -20,6 +20,10 @@ public:
     int getNumColumns() const noexcept { return juce::jmax (1, ((int) controls.size() + kRows - 1) / kRows); }
     void setBadge (const juce::String&);
 
+    /** 0..1 glow around the panel (used to point at a module opened from the chain strip). */
+    void setHighlight (float amount);
+    float getHighlight() const noexcept { return highlight; }
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -33,6 +37,7 @@ private:
     Module module;
     juce::String title, badge;
     juce::Colour accent;
+    float highlight = 0.0f;
     std::unique_ptr<PowerButton> power;
     std::vector<std::unique_ptr<ParamControl>> controls;
 
@@ -41,17 +46,22 @@ private:
 
 //==============================================================================
 class MachinePage final : public juce::Component,
-                          private juce::ChangeListener
+                          private juce::ChangeListener,
+                          private juce::Timer
 {
 public:
     MachinePage (SwoonAudioProcessor&, ChainModel&);
     ~MachinePage() override;
+
+    /** Briefly lights up a module's panel so the eye finds it. */
+    void spotlight (Module);
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    void timerCallback() override;
     void updateBadges();
 
     ChainModel& model;

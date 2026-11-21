@@ -90,7 +90,8 @@ macros where they make sense for that sound, so a clean preset has Wall at
 0 %, and raising it brings the fuzz in.
 
 The **signal path** strip shows the seven reorderable modules. Drag to
-reorder, click a module to switch it on or off. The **Fuzz → Wash** button
+reorder, click a module's power icon to switch it on or off, double-click a
+module to jump to its panel on the Machine page. The **Fuzz → Wash** button
 flips the one routing choice that matters most: fuzz into reverb is clear and
 defined; reverb into fuzz is the smeared wall, where every tail is dragged
 back up into the distortion. Tape and Output always come last.
@@ -98,8 +99,11 @@ back up into the distortion. Tape and Output always come last.
 **Machine** (second page): every parameter of every module.
 
 Controls: drag up/down, hold Shift for fine adjustment, double-click to reset,
-mouse wheel to nudge. Click the preset name to open the browser (categories,
-notes, save and delete for your own presets).
+mouse wheel to nudge. Click a value readout (or Ctrl/Cmd-click a knob) to type
+a value. The line along the bottom of the window explains whatever is under
+the mouse. **Freeze**, on the corner of the haze, holds the current reverb
+tail for as long as it is lit. Click the preset name to open the browser
+(search, categories, notes, save and delete for your own presets).
 
 ### Parameter guide
 
@@ -160,7 +164,8 @@ feeding each other, and a dense haze over the top.
 
 | Parameter | Range | |
 |---|---|---|
-| Time | 60–900 ms | Left delay time; the right is always 1.52× longer. |
+| Time | 60–900 ms | Left delay time; the right is 1.52× longer. |
+| Sync | Free, 1/16 … 1/2 | Locks the left delay to the host tempo; the right becomes its dotted value (1.5×). |
 | Feedback | 0–90 % | |
 | Detune | 0–40 ct | Peak detune of the chorus voices. |
 | Haze | 0–100 % | Amount and length of the reverb inside the patch. |
@@ -172,6 +177,7 @@ feeding each other, and a dense haze over the top.
 |---|---|---|
 | Mode | Swell / Tape / Both | Swell is the rack-unit "reverse reverb": a run of delay taps that rise in level and then stop, so notes bloom out of nothing. Tape is true reverse delay. Both feeds the reverse delay into the swell. |
 | Time | 60–1600 ms | Length of the swell, or of each reversed slice. |
+| Sync | Free, 1/16 … 1/2 | Locks Time to the host tempo. |
 | Feedback | 0–90 % | Repeats. |
 | Smear | 0–100 % | Shape of the rise and amount of diffusion. |
 | Tone | 0–100 % | Low-pass on the wet signal. Turn it down for the classic sound. |
@@ -234,9 +240,10 @@ than a real instrument, so treat them as a sketch of what each preset does.
 
 ### Latency and CPU
 
-Swoon reports a fixed latency of about 4.6 ms (219 samples at 48 kHz) from the
-oversampled fuzz and the tape transport; it does not change when modules are
-switched on or off. Glide adds a further, unreported 10–45 ms to the wet
+Swoon reports a fixed latency of about 5.2 ms (251 samples at 48 kHz) from the
+oversampled fuzz, the tape transport and its internal 32-sample block; it does
+not change when modules are switched on or off, and the sound does not depend
+on the host's buffer size. Glide adds a further, unreported 10–45 ms to the wet
 signal while it is on. That delay is the effect itself (the same way a chorus
 has one), but it matters if you play through the Standalone build live.
 
@@ -280,7 +287,6 @@ a host (wrap it in `xvfb-run -a` on a headless Linux box).
   not been compiled or run.
 - Verified by measurement, not by ear: see `NOTES.md` for what the
   measurements cover and what still needs a listening pass.
-- Delay times are in milliseconds; there is no tempo sync.
 - The fuzz model is fastest when the compiler vectorises it (GCC and Clang do
   at `-O3`).
 

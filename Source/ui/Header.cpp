@@ -1,6 +1,7 @@
 #include "Header.h"
 
 #include "../PluginProcessor.h"
+#include "StatusLine.h"
 
 namespace swoon::ui
 {
@@ -14,11 +15,11 @@ float levelToProportion (float linear) noexcept
     return juce::jlimit (0.0f, 1.0f, (db + 54.0f) / 60.0f);
 }
 
-constexpr float kMeterLabelW = 23.0f;
+constexpr float kMeterLabelW = 27.0f;
 } // namespace
 
 //==============================================================================
-MeterView::MeterView (const VizData& v) : viz (v), labelFont (sansFont (8.0f, 1, 0.14f))
+MeterView::MeterView (const VizData& v) : viz (v), labelFont (sansFont (9.6f, 1, 0.1f))
 {
     setInterceptsMouseClicks (false, false);
     setTitle ("Level meters");
@@ -115,6 +116,41 @@ void Header::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     modified = presets.isModified();
     repaint();
+
+    if (hover != Zone::none)
+        postHoverHelp();
+}
+
+juce::String Header::positionText() const
+{
+    const int index = presets.getCurrentIndex(), total = (int) presets.getEntries().size();
+    return index >= 0 && index < total ? juce::String (index + 1) + " / " + juce::String (total) : juce::String();
+}
+
+void Header::postHoverHelp()
+{
+    switch (hover)
+    {
+        case Zone::tabSleeve:
+            postHelp (*this, "Sleeve", "The front page: six macros, the signal path and the haze, which moves with the audio.");
+            break;
+        case Zone::tabMachine:
+            postHelp (*this, "Machine", "Every parameter of every module.");
+            break;
+        case Zone::previous:
+            postHelp (*this, "Previous preset", "Steps back through the factory and user presets.", positionText());
+            break;
+        case Zone::next:
+            postHelp (*this, "Next preset", "Steps forward through the factory and user presets.", positionText());
+            break;
+        case Zone::name:
+            postHelp (*this, "Presets", modified ? "Click to browse, search and save. The dot means this sound has been edited since it was loaded."
+                                                 : "Click to browse, search and save.", positionText());
+            break;
+        case Zone::none:
+            clearHelp (*this);
+            break;
+    }
 }
 
 void Header::setPage (int newPage)
@@ -180,6 +216,7 @@ void Header::setHover (Zone zone)
     {
         hover = zone;
         setMouseCursor (zone == Zone::none ? juce::MouseCursor::NormalCursor : juce::MouseCursor::PointingHandCursor);
+        postHoverHelp();
         repaint();
     }
 }
@@ -236,7 +273,7 @@ void Header::paint (juce::Graphics& g)
     // page switch
     {
         static constexpr const char* names[] = { "SLEEVE", "MACHINE" };
-        const auto font = sansFont (10.8f, 1, 0.22f);
+        const auto font = sansFont (11.2f, 1, 0.22f);
 
         for (int i = 0; i < 2; ++i)
         {
@@ -315,6 +352,22 @@ void Header::paint (juce::Graphics& g)
             fillGlow (g, dot, 8.0f, col::rose.withAlpha (0.5f));
             g.setColour (col::rose);
             g.fillEllipse (dot.x - 2.3f, dot.y - 2.3f, 4.6f, 4.6f);
+        }
+
+        // position in the library, tucked in before the next arrow when the name leaves room
+        const auto position = positionText();
+        if (position.isNotEmpty())
+        {
+            const auto positionFont = sansFont (9.8f, 0, 0.06f);
+            const float w = textWidth (positionFont, position) + 2.0f;
+            const float x = pb.getRight() - 34.0f - w;
+
+            if (x > nameArea.getRight() + (modified ? 22.0f : 12.0f))
+            {
+                g.setColour (col::dusk);
+                g.setFont (positionFont);
+                g.drawText (position, juce::Rectangle<float> (x, pb.getY(), w, pb.getHeight() - 1.0f), juce::Justification::centredRight, false);
+            }
         }
     }
 

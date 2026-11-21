@@ -56,6 +56,7 @@ namespace swoon
     X(revOn,       "revOn",       "Reverse On",      Reverse, Bool,  0.f, 1.f, 0.f,  0.f, "",  "") \
     X(revMode,     "revMode",     "Reverse Mode",    Reverse, Choice,0.f, 2.f, 0.f,  0.f, "",  "Swell|Tape|Both") \
     X(revTime,     "revTime",     "Reverse Time",    Reverse, Float, 60.f, 1600.f, 380.f, 400.f, "ms", "") \
+    X(revSync,     "revSync",     "Reverse Sync",    Reverse, Choice,0.f, 6.f, 0.f,  0.f, "",  "Free|1/16|1/8|1/8 dot|1/4|1/4 dot|1/2") \
     X(revFeedback, "revFeedback", "Reverse Feedback",Reverse, Float, 0.f, 0.9f, 0.2f, 0.f, "%", "") \
     X(revSmear,    "revSmear",    "Reverse Smear",   Reverse, Float, 0.f, 1.f, 0.6f, 0.f, "%", "") \
     X(revTone,     "revTone",     "Reverse Tone",    Reverse, Float, 0.f, 1.f, 0.7f, 0.f, "%", "") \
@@ -63,6 +64,7 @@ namespace swoon
     /* ---- soft focus ------------------------------------------------------------------- */ \
     X(focOn,       "focOn",       "Focus On",        Focus,   Bool,  0.f, 1.f, 1.f,  0.f, "",  "") \
     X(focTime,     "focTime",     "Focus Time",      Focus,   Float, 60.f, 900.f, 250.f, 280.f, "ms", "") \
+    X(focSync,     "focSync",     "Focus Sync",      Focus,   Choice,0.f, 6.f, 0.f,  0.f, "",  "Free|1/16|1/8|1/8 dot|1/4|1/4 dot|1/2") \
     X(focFeedback, "focFeedback", "Focus Feedback",  Focus,   Float, 0.f, 0.9f, 0.35f,0.f, "%", "") \
     X(focDetune,   "focDetune",   "Focus Detune",    Focus,   Float, 0.f, 40.f, 9.f, 0.f, "ct", "") \
     X(focHaze,     "focHaze",     "Focus Haze",      Focus,   Float, 0.f, 1.f, 0.5f, 0.f, "%", "") \

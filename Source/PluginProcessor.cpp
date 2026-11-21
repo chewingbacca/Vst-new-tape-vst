@@ -219,6 +219,11 @@ void SwoonAudioProcessor::processInternal (juce::AudioBuffer<float>& buffer, boo
     if (hostBypassed)
         paramValues[swoon::P::bypass] = 1.0f;
 
+    if (auto* head = getPlayHead())
+        if (const auto position = head->getPosition())
+            if (const auto bpm = position->getBpm())
+                engine.setTempo (*bpm);
+
     // The host may hand us more samples than it promised in prepareToPlay; process in slices.
     const int maxSlice = stereoScratch.getNumSamples();
     if (maxSlice <= 0)

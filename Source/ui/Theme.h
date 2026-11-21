@@ -13,6 +13,7 @@ namespace swoon::ui
 inline constexpr int kBaseW = 1000;
 inline constexpr int kBaseH = 660;
 inline constexpr int kHeaderH = 54;
+inline constexpr int kStatusH = 22;     // hint line along the bottom
 
 //==============================================================================
 namespace col

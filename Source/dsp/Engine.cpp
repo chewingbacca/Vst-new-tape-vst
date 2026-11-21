@@ -16,7 +16,7 @@ namespace swoon
 
 struct Engine::Impl
 {
-    float fs = 48000.0f;
+    float fs = 48000.0f, bpm = 120.0f;
     int latency = 0;
     bool first = true;
     EngineMeters meters;
@@ -182,7 +182,8 @@ struct Engine::Impl
                 SoftFocus::Params sp;
                 const float blur = pv[P::blur];
                 sp.on = pv.on (P::focOn);
-                sp.timeMs = pv[P::focTime];
+                sp.timeMs = macro::syncedMs (pv.choice (P::focSync), bpm, pv[P::focTime]);
+                sp.rightRatio = pv.choice (P::focSync) > 0 ? 1.5f : SoftFocus::kRightRatio;   // dotted against straight
                 sp.feedback = pv[P::focFeedback];
                 sp.detuneCents = pv[P::focDetune] * macro::detuneMul (blur);
                 sp.haze = pv[P::focHaze] + macro::hazeOffset (blur);
@@ -196,7 +197,7 @@ struct Engine::Impl
                 Reverse::Params rp;
                 rp.on = pv.on (P::revOn);
                 rp.mode = pv.choice (P::revMode);
-                rp.timeMs = pv[P::revTime];
+                rp.timeMs = macro::syncedMs (pv.choice (P::revSync), bpm, pv[P::revTime]);
                 rp.feedback = pv[P::revFeedback];
                 rp.smear = pv[P::revSmear];
                 rp.tone = pv[P::revTone] + macro::toneOffset (pv[P::warmth]);
@@ -404,6 +405,7 @@ Engine::~Engine() = default;
 void Engine::prepare (double sampleRate, int maxBlockSize) { impl->prepare (sampleRate, maxBlockSize); }
 void Engine::reset() { impl->reset(); }
 int Engine::getLatencySamples() const { return impl->latency + kChunk; }
+void Engine::setTempo (double beatsPerMinute) { impl->bpm = static_cast<float> (beatsPerMinute > 0.0 ? beatsPerMinute : 120.0); }
 const EngineMeters& Engine::getMeters() const { return impl->meters; }
 
 void Engine::process (float* left, float* right, int numSamples, const ParamValues& params)

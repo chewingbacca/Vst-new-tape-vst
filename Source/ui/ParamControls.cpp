@@ -1,5 +1,8 @@
 #include "ParamControls.h"
 
+#include "StatusLine.h"
+#include "ValueEntry.h"
+
 namespace swoon::ui
 {
 
@@ -36,7 +39,7 @@ float windowY (const juce::MouseEvent& e)
 void drawCellLabel (juce::Graphics& g, const CellMetrics& m, const juce::String& text, juce::Colour colour)
 {
     g.setColour (colour);
-    drawFitted (g, text, m.labelArea, juce::Justification::centred, sansFont (10.8f, 0, 0.03f), 0.74f);
+    drawFitted (g, text, m.labelArea, juce::Justification::centred, sansFont (11.4f, 0, 0.03f), 0.72f);
 }
 } // namespace
 
@@ -50,6 +53,8 @@ ParamControl::ParamControl (juce::RangedAudioParameter& p, const juce::String& l
           {
               value = v;
               parameterChanged();
+              if (hover)
+                  postParameterHelp (*this, param);    // keep the status line's readout current
               if (onValueChange != nullptr)
                   onValueChange();
           }
@@ -57,6 +62,37 @@ ParamControl::ParamControl (juce::RangedAudioParameter& p, const juce::String& l
 {
     setTitle (p.getName (64));
     setWantsKeyboardFocus (false);
+}
+
+ParamControl::~ParamControl() = default;
+
+void ParamControl::beginValueEntry (juce::Rectangle<int> area)
+{
+    if (valueEntry == nullptr)
+    {
+        valueEntry = std::make_unique<ValueEntry> (accent);
+        valueEntry->onCommit = [this] (const juce::String& text) { commitValueText (text); };
+        valueEntry->onDismiss = [this] { repaint(); };
+        addChildComponent (*valueEntry);
+    }
+
+    valueEntry->setBounds (area.getIntersection (getLocalBounds()));
+    valueEntry->begin (valueText());
+    repaint();
+}
+
+bool ParamControl::isEditingValue() const noexcept
+{
+    return valueEntry != nullptr && valueEntry->isActive();
+}
+
+void ParamControl::commitValueText (const juce::String& text)
+{
+    if (! text.containsAnyOf ("0123456789"))
+        return;     // nothing that reads as a number: leave the value alone
+
+    const float normalised = juce::jlimit (0.0f, 1.0f, param.getValueForText (text.trim()));
+    attachment.setValueAsCompleteGesture (param.convertFrom0to1 (normalised));
 }
 
 bool ParamControl::showHostMenu (const juce::MouseEvent& e)
@@ -79,6 +115,11 @@ void ParamControl::setHover (bool shouldHover)
     {
         hover = shouldHover;
         repaint();
+
+        if (hover)
+            postParameterHelp (*this, param);
+        else
+            clearHelp (*this);
     }
 }
 
@@ -171,15 +212,28 @@ void Knob::paintMacro (juce::Graphics& g)
     g.fillEllipse (dot.x - 2.5f, dot.y - 2.5f, 5.0f, 5.0f);
 
     // name + value
-    const auto nameFont = sansFont (12.0f, 1, 0.2f);
+    const auto nameFont = sansFont (12.4f, 1, 0.2f);
     auto nameArea = textArea.withHeight (17.0f).translated (0.1f * nameFont.getHeight(), 1.0f);
     g.setColour (col::fog.withAlpha (0.94f));
     g.setFont (nameFont);
     g.drawText (label.toUpperCase(), nameArea, juce::Justification::centred, false);
 
-    g.setColour (active ? col::fog : col::mist.withAlpha (0.85f));
-    g.setFont (sansFont (11.5f, 0, 0.02f));
-    g.drawText (valueText(), textArea.withTrimmedTop (19.0f).withHeight (16.0f), juce::Justification::centred, false);
+    if (! isEditingValue())
+    {
+        g.setColour (active ? col::fog : col::mist.withAlpha (0.85f));
+        g.setFont (sansFont (12.0f, 0, 0.02f));
+        g.drawText (valueText(), textArea.withTrimmedTop (19.0f).withHeight (16.0f), juce::Justification::centred, false);
+    }
+}
+
+juce::Rectangle<int> Knob::readoutBounds() const
+{
+    if (style == Style::macro)
+        return juce::Rectangle<int> (84, 22).withCentre ({ getWidth() / 2, getHeight() - 13 });
+
+    const CellMetrics m (*this);
+    const int w = juce::jmin (getWidth() - 2, 66);
+    return juce::Rectangle<int> (w, 19).withCentre (m.labelArea.getCentre().roundToInt());
 }
 
 void Knob::paintSmall (juce::Graphics& g)
@@ -221,12 +275,18 @@ void Knob::paintSmall (juce::Graphics& g)
     g.setColour (col::fog);
     g.drawLine ({ a, b }, 1.8f);
 
-    drawCellLabel (g, m, active ? valueText() : label, active ? col::fog : col::mist);
+    if (! isEditingValue())
+        drawCellLabel (g, m, active ? valueText() : label, active ? col::fog : col::mist);
 }
 
 void Knob::mouseDown (const juce::MouseEvent& e)
 {
-    if (showHostMenu (e))
+    if (showHostMenu (e) || isEditingValue())
+        return;
+
+    // the readout is a text field in waiting; Ctrl/Cmd-click reaches it from anywhere on the knob
+    pressedOnReadout = e.mods.isCommandDown() || readoutBounds().contains (e.getPosition());
+    if (pressedOnReadout)
         return;
 
     dragging = true;
@@ -257,8 +317,16 @@ void Knob::mouseDrag (const juce::MouseEvent& e)
     attachment.setValueAsPartOfGesture (param.convertFrom0to1 ((float) target));
 }
 
-void Knob::mouseUp (const juce::MouseEvent&)
+void Knob::mouseUp (const juce::MouseEvent& e)
 {
+    if (pressedOnReadout)
+    {
+        pressedOnReadout = false;
+        if (getLocalBounds().contains (e.getPosition()))
+            beginValueEntry (readoutBounds());
+        return;
+    }
+
     if (! dragging)
         return;
 
@@ -267,8 +335,16 @@ void Knob::mouseUp (const juce::MouseEvent&)
     repaint();
 }
 
-void Knob::mouseDoubleClick (const juce::MouseEvent&)
+void Knob::mouseMove (const juce::MouseEvent& e)
 {
+    setMouseCursor (readoutBounds().contains (e.getPosition()) ? juce::MouseCursor::IBeamCursor : juce::MouseCursor::NormalCursor);
+}
+
+void Knob::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (isEditingValue() || readoutBounds().contains (e.getPosition()))
+        return;     // double-click resets from the knob itself; on the readout it belongs to the text field
+
     const float defaultValue = param.convertFrom0to1 (param.getDefaultValue());
 
     if (dragging)
@@ -285,7 +361,7 @@ void Knob::mouseDoubleClick (const juce::MouseEvent&)
 
 void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
-    if (dragging || juce::approximatelyEqual (wheel.deltaY, 0.0f))
+    if (dragging || isEditingValue() || juce::approximatelyEqual (wheel.deltaY, 0.0f))
         return;
 
     const float direction = wheel.isReversed ? -1.0f : 1.0f;
@@ -361,7 +437,7 @@ void ChoiceSelector::paint (juce::Graphics& g)
     // current choice, on two lines when it is long
     const auto text = choices[current];
     auto textArea = win.reduced (6.0f, 0.0f).withTrimmedTop (2.0f).withTrimmedBottom (n > 1 ? 9.0f : 2.0f);
-    auto font = sansFont (10.8f, 1, 0.01f);
+    auto font = sansFont (11.2f, 1, 0.01f);
     g.setColour (col::fog);
 
     const int space = text.indexOfChar (' ');
@@ -373,7 +449,7 @@ void ChoiceSelector::paint (juce::Graphics& g)
             if (std::abs (i - text.length() / 2) < std::abs (split - text.length() / 2))
                 split = i;
 
-        font = sansFont (9.6f, 1, 0.01f);
+        font = sansFont (10.0f, 1, 0.01f);
         const auto upper = textArea.withHeight (textArea.getHeight() * 0.5f).translated (0.0f, 1.2f);
         drawFitted (g, text.substring (0, split), upper, juce::Justification::centred, font, 0.8f);
         drawFitted (g, text.substring (split + 1), upper.translated (0.0f, upper.getHeight() - 1.6f), juce::Justification::centred, font, 0.8f);
@@ -529,6 +605,112 @@ void PowerButton::mouseDown (const juce::MouseEvent& e)
 void PowerButton::mouseUp (const juce::MouseEvent& e)
 {
     if (! e.mods.isPopupMenu() && getLocalBounds().contains (e.getPosition()))
+        attachment.setValueAsCompleteGesture (isOn() ? 0.0f : 1.0f);
+}
+
+//==============================================================================
+FreezeButton::FreezeButton (juce::RangedAudioParameter& p)
+    : ParamControl (p, "Freeze", col::seaglass.interpolatedWith (col::sky, 0.45f))
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void FreezeButton::setModuleEnabled (bool shouldBeEnabled)
+{
+    if (moduleEnabled != shouldBeEnabled)
+    {
+        moduleEnabled = shouldBeEnabled;
+        repaint();
+    }
+}
+
+void FreezeButton::paint (juce::Graphics& g)
+{
+    const bool on = isOn();
+    const auto b = getLocalBounds().toFloat();
+    const auto pill = b.withSizeKeepingCentre (juce::jmin (b.getWidth() - 30.0f, 128.0f), 34.0f).translated (0.0f, pressed ? 0.6f : 0.0f);
+    const float r = pill.getHeight() * 0.5f;
+    const auto ice = accent;
+    const float presence = moduleEnabled ? 1.0f : 0.5f;
+
+    if (on)
+    {
+        // held: a block of ice, lit from inside
+        for (int i = 9; i >= 1; --i)
+        {
+            const float spread = 1.5f * (float) i;
+            g.setColour (ice.withAlpha (0.04f * presence));
+            g.fillRoundedRectangle (pill.expanded (spread), r + spread);
+        }
+
+        g.setGradientFill (juce::ColourGradient (ice.interpolatedWith (juce::Colours::white, 0.55f), pill.getX(), pill.getY(),
+                                                 ice, pill.getRight(), pill.getBottom(), false));
+        g.setOpacity (0.94f * (moduleEnabled ? 1.0f : 0.7f));
+        g.fillRoundedRectangle (pill, r);
+        g.setOpacity (1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.drawRoundedRectangle (pill.reduced (0.5f), r, 1.2f);
+    }
+    else
+    {
+        g.setColour (col::ink.withAlpha (hover ? 0.72f : 0.55f));
+        g.fillRoundedRectangle (pill, r);
+        g.setColour (ice.withAlpha ((hover ? 0.95f : 0.6f) * presence));
+        g.drawRoundedRectangle (pill.reduced (0.5f), r, 1.2f);
+    }
+
+    const auto ink = on ? col::ink : (hover ? col::fog : ice.interpolatedWith (col::fog, 0.45f)).withMultipliedAlpha (presence);
+
+    // snowflake: three crossing arms with small barbs
+    {
+        const juce::Point<float> c (pill.getX() + r + 3.0f, pill.getCentreY());
+        const float arm = 7.0f;
+        juce::Path flake;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const float a = juce::MathConstants<float>::pi / 3.0f * (float) i;
+            const auto p0 = c.getPointOnCircumference (arm, a), p1 = c.getPointOnCircumference (arm, a + juce::MathConstants<float>::pi);
+            flake.startNewSubPath (p0);
+            flake.lineTo (p1);
+
+            for (auto tip : { a, a + juce::MathConstants<float>::pi })
+            {
+                const auto base = c.getPointOnCircumference (arm * 0.58f, tip);
+                flake.startNewSubPath (base.getPointOnCircumference (2.6f, tip + 0.9f));
+                flake.lineTo (base);
+                flake.lineTo (base.getPointOnCircumference (2.6f, tip - 0.9f));
+            }
+        }
+
+        g.setColour (ink);
+        g.strokePath (flake, juce::PathStrokeType (1.25f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+
+    g.setColour (ink);
+    g.setFont (sansFont (12.4f, 2, 0.2f));
+    g.drawText (on ? "FROZEN" : "FREEZE", pill.withTrimmedLeft (r * 2.0f + 6.0f).withTrimmedRight (12.0f).translated (1.0f, 0.0f),
+                juce::Justification::centred, false);
+}
+
+void FreezeButton::mouseDown (const juce::MouseEvent& e)
+{
+    if (showHostMenu (e))
+        return;
+
+    pressed = true;
+    repaint();
+}
+
+void FreezeButton::mouseUp (const juce::MouseEvent& e)
+{
+    if (! pressed)
+        return;
+
+    pressed = false;
+    repaint();
+
+    if (getLocalBounds().contains (e.getPosition()))
         attachment.setValueAsCompleteGesture (isOn() ? 0.0f : 1.0f);
 }
 
