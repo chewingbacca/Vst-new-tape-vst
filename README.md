@@ -247,9 +247,11 @@ on the host's buffer size. Glide adds a further, unreported 10–45 ms to the we
 signal while it is on. That delay is the effect itself (the same way a chorus
 has one), but it matters if you play through the Standalone build live.
 
-Measured on the development machine (a 2.1 GHz Xeon virtual CPU) at 48 kHz,
-the heaviest presets use about 11–14 % of one core and clean presets about
-5–6 %, whatever the host's buffer size.
+Measured on the development machine (one 2.1 GHz Xeon virtual CPU, a shared
+and fairly noisy host) at 48 kHz, fuzz-heavy presets use about 12–15 % of one
+core and clean or ambient presets about 6–9 %, whatever the host's buffer
+size. Earlier the same day, on a faster host, the same presets measured
+10–12 % and 5 %. Expect roughly half of that on a current desktop CPU.
 
 ## Testing
 
@@ -260,6 +262,9 @@ python3 tools/run_suite.py --out out/suite   # render suite, writes out/suite/re
 python3 tools/click_tests.py            # click tests only
 python3 tools/preset_report.py          # loudness / balance table for the presets
 ```
+
+The most recent full run is saved as
+[`docs/verification-report.md`](docs/verification-report.md).
 
 - **Unit tests** (`Tests/unit_tests.cpp`): parameter table, oversampler
   (pass-band, images, exact latency), the diode solver, pitch shifter, reverb

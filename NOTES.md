@@ -197,7 +197,9 @@ passes the host BPM with `Engine::setTempo` each block (120 if unknown).
 - CPU (one core, 256-sample blocks): everything on measured 11 % at 48 kHz
   (fuzz 6 %, wash 1.5 %, focus 1.3 %), clean presets about 5 %; 96 kHz 18 %,
   192 kHz 31 %. The VM later moved to a slower host (2.1 GHz Xeon vCPU), where
-  the same binaries measure about 14 % everything-on. CPU no longer depends on
+  the same binaries measure about 14 % everything-on; after the Halley change
+  fuzz presets there run 12-15 %, clean/ambient 6-9 % (see
+  `docs/verification-report.md` for the last full run). CPU no longer depends on
   host block size (block size 1 used to cost half as much again).
 - Presets: walls sit at -17.5 dBFS RMS on the strummed phrase, clean presets
   -20.5, ambient -22; the limiter never engages on any of them.
