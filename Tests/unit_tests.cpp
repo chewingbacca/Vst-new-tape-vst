@@ -102,6 +102,23 @@ TEST (params_table_is_consistent)
     CHECK (paramFromId ("nope") == P::Count);
 }
 
+TEST (fast_math_is_accurate)
+{
+    double maxExpErr = 0.0, maxLogErr = 0.0, maxTanhErr = 0.0;
+    for (int i = 0; i <= 200000; ++i)
+    {
+        const float x = -30.0f + 60.0f * static_cast<float> (i) / 200000.0f;
+        maxExpErr = std::max (maxExpErr, std::abs (static_cast<double> (fastExp (x)) / std::exp (static_cast<double> (x)) - 1.0));
+        const float v = std::exp (x * 0.5f);
+        maxLogErr = std::max (maxLogErr, std::abs (static_cast<double> (fastLog (v)) - std::log (static_cast<double> (v))));
+        const float t = x * 0.2f;
+        maxTanhErr = std::max (maxTanhErr, std::abs (static_cast<double> (fastTanh (t)) - std::tanh (static_cast<double> (t))));
+    }
+    CHECK (maxExpErr < 2.0e-6);
+    CHECK (maxLogErr < 3.0e-5);
+    CHECK (maxTanhErr < 2.0e-3);
+}
+
 TEST (order_resolution_is_a_stable_permutation)
 {
     ParamValues pv;
@@ -248,6 +265,28 @@ TEST (diode_stage_is_bounded_monotonic_and_settles_to_static_curve)
         maxAsym = std::max (maxAsym, static_cast<double> (std::abs (a.process (x) + b.process (-x))));
     }
     CHECK (maxAsym < 1.0e-3);
+
+    // the vectorised four-lane solver matches the scalar reference
+    DiodeQuad quad;
+    DiodeStage ref[4];
+    const float corners[4] = { 1300.0f, 1300.0f, 1500.0f, 3800.0f };
+    for (int k = 0; k < 4; ++k)
+    {
+        quad.set (k, corners[k], 0.05f, 192000.0f);
+        ref[k].set (corners[k], 0.05f, 192000.0f);
+    }
+    double maxDiff = 0.0;
+    for (int i = 0; i < 20000; ++i)
+    {
+        float d[4], u[4];
+        for (int k = 0; k < 4; ++k)
+            d[k] = (k == 3 ? 3.0f : 400.0f) * static_cast<float> (std::sin (2.0 * pi * (110.0 * (k + 1)) * i / 192000.0))
+                 * static_cast<float> (std::exp (-i / 6000.0));
+        quad.process (d, u);
+        for (int k = 0; k < 4; ++k)
+            maxDiff = std::max (maxDiff, static_cast<double> (std::abs (u[k] - ref[k].process (d[k]))));
+    }
+    CHECK (maxDiff < 2.0e-3);
 }
 
 TEST (fuzz_latency_matches_and_dry_is_aligned)

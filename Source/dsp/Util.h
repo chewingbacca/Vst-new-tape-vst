@@ -36,6 +36,36 @@ inline float fastTanh (float x) noexcept
              / (135135.0f + x2 * (62370.0f + x2 * (3150.0f + x2 * 28.0f)));
 }
 
+/** exp (x) to about 1e-7 relative error: 2^k * polynomial (2^f), f in [-0.5, 0.5]. */
+inline float fastExp (float x) noexcept
+{
+    const float y = std::clamp (x, -80.0f, 80.0f) * 1.44269504089f;
+    const int ki = static_cast<int> (y + (y < 0.0f ? -0.5f : 0.5f));   // round to nearest without a libm call
+    const float k = static_cast<float> (ki);
+    const float f = y - k;
+    const float p = 1.0f + f * (0.693147181f + f * (0.240226507f + f * (0.0555041087f
+                  + f * (0.00961812911f + f * (0.00133335581f + f * 0.000154035304f)))));
+    const uint32_t bits = static_cast<uint32_t> (ki + 127) << 23;
+    float scale;
+    std::memcpy (&scale, &bits, sizeof (scale));
+    return p * scale;
+}
+
+/** ln (x) for x > 0 to about 1e-5 absolute error. */
+inline float fastLog (float x) noexcept
+{
+    uint32_t bits;
+    std::memcpy (&bits, &x, sizeof (bits));
+    const int e = static_cast<int> (bits >> 23) - 127;
+    bits = (bits & 0x007FFFFFu) | 0x3F800000u;
+    float m;
+    std::memcpy (&m, &bits, sizeof (m));          // mantissa in [1, 2)
+    const float t = (m - 1.0f) / (m + 1.0f);      // ln (m) = 2 atanh (t)
+    const float t2 = t * t;
+    return 0.69314718056f * static_cast<float> (e)
+         + 2.0f * t * (1.0f + t2 * (0.333333333f + t2 * (0.2f + t2 * (0.142857143f + t2 * 0.111111111f))));
+}
+
 inline bool isBad (float x) noexcept { return ! (std::abs (x) < 1.0e6f); }   // catches NaN, inf and absurd values
 
 inline int nextPow2 (int n) noexcept

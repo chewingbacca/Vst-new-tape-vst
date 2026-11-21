@@ -18,7 +18,7 @@
 namespace swoon
 {
 
-/** One diode-feedback clipping stage. */
+/** One diode-feedback clipping stage (scalar reference implementation; the fuzz itself uses DiodeQuad). */
 struct DiodeStage
 {
     float u1 = 0.0f, u2 = 0.0f;     // previous two outputs
@@ -66,6 +66,89 @@ struct DiodeStage
     }
 };
 
+/** Four diode-feedback stages solved together so the compiler can vectorise the Newton iteration:
+    lanes 0/1 = first stage left/right, lanes 2/3 = second stage left/right. Same maths as DiodeStage. */
+struct DiodeQuad
+{
+    alignas (16) float u1[4] {}, u2[4] {};
+    alignas (16) float c[4] { 0.02f, 0.02f, 0.02f, 0.02f }, a[4] { 1, 1, 1, 1 }, b[4] { 1, 1, 1, 1 },
+                       invAB[4] { 1, 1, 1, 1 }, invB[4] { 1, 1, 1, 1 };
+
+    void set (int lane, float cornerHz, float beta, float rate) noexcept
+    {
+        c[lane] = 2.0f * kTwoPi * cornerHz / (3.0f * rate);
+        a[lane] = 1.0f + c[lane];
+        b[lane] = c[lane] * beta;
+        invAB[lane] = 1.0f / (a[lane] + b[lane]);
+        invB[lane] = 1.0f / b[lane];
+    }
+    void reset() noexcept
+    {
+        for (int k = 0; k < 4; ++k)
+            u1[k] = u2[k] = 0.0f;
+    }
+
+    void process (const float* d, float* out) noexcept
+    {
+        alignas (16) float rhs[4], mag[4], u[4];
+
+        for (int k = 0; k < 4; ++k)
+        {
+            rhs[k] = (4.0f / 3.0f) * u1[k] - (1.0f / 3.0f) * u2[k] + c[k] * d[k];
+            mag[k] = std::abs (rhs[k]);
+        }
+
+        // initial guess: min (linear solution, asinh solution); both over-shoot the root
+        for (int k = 0; k < 4; ++k)
+        {
+            const float q = mag[k] * invB[k];
+            const float arg = q + std::sqrt (q * q + 1.0f);          // >= 1
+
+            // ln (arg): exponent + 2 atanh ((m - 1) / (m + 1)) on the mantissa
+            uint32_t bits;
+            std::memcpy (&bits, &arg, sizeof (bits));
+            const float e = static_cast<float> (static_cast<int> (bits >> 23) - 127);
+            bits = (bits & 0x007FFFFFu) | 0x3F800000u;
+            float m;
+            std::memcpy (&m, &bits, sizeof (m));
+            const float t = (m - 1.0f) / (m + 1.0f);
+            const float t2 = t * t;
+            const float sat = 0.69314718056f * e
+                            + 2.0f * t * (1.0f + t2 * (0.333333333f + t2 * (0.2f + t2 * (0.142857143f + t2 * 0.111111111f))));
+
+            u[k] = std::min (mag[k] * invAB[k], sat);
+        }
+
+        for (int it = 0; it < 3; ++it)
+            for (int k = 0; k < 4; ++k)
+            {
+                // exp (u), u >= 0: 2^n * poly (2^f), f in [-0.5, 0.5]
+                const float y = std::min (u[k], 60.0f) * 1.44269504089f;
+                const int ni = static_cast<int> (y + 0.5f);
+                const float f = y - static_cast<float> (ni);
+                const float poly = 1.0f + f * (0.693147181f + f * (0.240226507f + f * (0.0555041087f
+                                 + f * (0.00961812911f + f * (0.00133335581f + f * 0.000154035304f)))));
+                const uint32_t ebits = static_cast<uint32_t> (ni + 127) << 23;
+                float scale;
+                std::memcpy (&scale, &ebits, sizeof (scale));
+                const float ex = poly * scale;
+                const float ie = 1.0f / ex;
+
+                const float sh = 0.5f * (ex - ie), ch = 0.5f * (ex + ie);
+                const float fn = a[k] * u[k] + b[k] * sh - mag[k];
+                u[k] -= fn / (a[k] + b[k] * ch);
+            }
+
+        for (int k = 0; k < 4; ++k)
+        {
+            const float v = std::copysign (std::max (u[k], 0.0f), rhs[k]);
+            u2[k] = u1[k];
+            u1[k] = v;
+            out[k] = v;
+        }
+    }
+};
+
 class Fuzz
 {
 public:
@@ -85,7 +168,7 @@ public:
     void prepare (double sampleRate, int /*maxBlock*/)
     {
         fs = static_cast<float> (sampleRate);
-        const int log2Factor = sampleRate < 70000.0 ? 2 : 1;   // 4x at 44.1/48 kHz, 2x above
+        const int log2Factor = sampleRate < 70000.0 ? 3 : (sampleRate < 140000.0 ? 2 : 1);   // 8x at 44.1/48 kHz, 4x at 88.2/96, 2x above
         for (auto& ch : chans)
         {
             ch.os.prepare (log2Factor, kChunk);
@@ -98,7 +181,7 @@ public:
         fsOs = fs * static_cast<float> (osFactor);
 
         // Pad the oversampler's round trip up to a whole number of base-rate samples.
-        const int topLatency = chans[0].os.latencyAtTopRate();
+        const int topLatency = chans[0].os.latencyAtTopRate() + 1;   // + the one-sample stage pipeline
         padSamples = (osFactor - (topLatency % osFactor)) % osFactor;
         latency = (topLatency + padSamples) / osFactor + kStackBase;
 
@@ -129,8 +212,7 @@ public:
             ch.padLine.reset();
             ch.dry.reset();
             ch.stackLine.reset();
-            ch.s1.reset();
-            ch.s2.reset();
+            ch.stage2In = 0.0f;
             ch.inHp.reset();
             ch.midHp.reset();
             ch.outHp.reset();
@@ -142,6 +224,7 @@ public:
             ch.dc.reset();
             ch.stackDelay.snap (0.0f);
         }
+        quad.reset();
         gate.reset();
         typeSwitch.reset();
         voiceSwitch.reset();
@@ -246,55 +329,60 @@ public:
 
         // ---- oversampled nonlinear core --------------------------------------------
         const int nOs = n * osFactor;
-        const float susStart = sustainS.y;
+        // sustain pot: -40 dB .. 0 dB (audio taper), then the input booster; ramped linearly across the chunk
+        const float driveStart = preGain * std::exp (4.6052f * (sustainS.y - 1.0f));
         for (int i = 0; i < n; ++i)
             sustainS.next();
-        const float susEnd = sustainS.y;
+        const float driveEnd = preGain * std::exp (4.6052f * (sustainS.y - 1.0f));
+        const float driveStep = (driveEnd - driveStart) / static_cast<float> (nOs);
+        float drive = driveStart;
 
+        float* x[2] = { chans[0].os.up (pre[0], n), chans[1].os.up (pre[1], n) };
         float wet[2][kChunk];
-        for (int ch = 0; ch < 2; ++ch)
+
+        for (int i = 0; i < nOs; ++i)
         {
-            auto& c = chans[ch];
-            float* x = c.os.up (pre[ch], n);
-            const float susStep = (susEnd - susStart) / static_cast<float> (nOs);
-            float sus = susStart;
+            drive += driveStep;
+            alignas (16) float d[4], u[4];
 
-            for (int i = 0; i < nOs; ++i)
+            for (int ch = 0; ch < 2; ++ch)
             {
-                sus += susStep;
-                // sustain pot: -40 dB .. 0 dB (audio taper), then the input booster
-                const float drive = preGain * std::exp (4.6052f * (sus - 1.0f));
-                float v = c.inHp.hp (x[i]) * drive;
-
+                auto& c = chans[ch];
+                float v = c.inHp.hp (x[ch][i]) * drive;
                 if (typeCfg.octave > 0.0f)
                 {
                     // full-wave rectifier ahead of the clippers: fundamental moves up an octave
                     const float rect = c.rectHp.hp (std::abs (v));
                     v = lerp (v, 2.0f * rect, typeCfg.octave);
                 }
+                d[ch] = v * typeCfg.gain1;
+                d[2 + ch] = c.stage2In;      // first-stage output from the previous sample (one-sample pipeline)
+            }
 
-                float u = c.s1.process (v * typeCfg.gain1);
-                u = c.midHp.hp (u);
+            quad.process (d, u);
 
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto& c = chans[ch];
+                float m = c.midHp.hp (u[ch]);
                 if (typeCfg.starve > 0.0f)
                 {
                     // bias-starved second stage: only peaks above a sagging bias get through
-                    const float env = c.sagEnv.process (u);
+                    const float env = c.sagEnv.process (m);
                     const float bias = typeCfg.starve * (3.0f + 0.12f * env);
-                    u = std::max (0.0f, u - bias) - 0.35f * std::max (0.0f, -u - bias * 1.6f);
-                    u *= 2.2f;
+                    m = std::max (0.0f, m - bias) - 0.35f * std::max (0.0f, -m - bias * 1.6f);
+                    m *= 2.2f;
                 }
-
-                u = c.s2.process (u * typeCfg.gain2);
-                u = c.outHp.hp (u);
+                c.stage2In = m * typeCfg.gain2;
 
                 // pad to a whole base-rate sample of latency
-                c.padLine.push (u * outScale);
-                x[i] = c.padLine.read (padSamples);
+                c.padLine.push (c.outHp.hp (u[2 + ch]) * outScale);
+                x[ch][i] = c.padLine.read (padSamples);
             }
-
-            c.os.down (wet[ch], n);
         }
+
+        chans[0].os.down (wet[0], n);
+        chans[1].os.down (wet[1], n);
 
         // ---- base-rate tone stack, level, mix --------------------------------------
         for (int i = 0; i < n; ++i)
@@ -348,10 +436,13 @@ private:
             case 1: typeCfg = { 12.0f, 10.0f, 0.85f, 0.0f, 2600.0f, 3200.0f, 180.0f, 160.0f }; break; // octave
             case 2: typeCfg = { 5.0f, 14.0f, 0.0f, 1.0f, 2200.0f, 3800.0f, 110.0f, 60.0f }; break;    // velcro
         }
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            quad.set (ch, typeCfg.corner1, 0.05f, fsOs);
+            quad.set (2 + ch, typeCfg.corner2, 0.05f, fsOs);
+        }
         for (auto& c : chans)
         {
-            c.s1.set (typeCfg.corner1, 0.05f, fsOs);
-            c.s2.set (typeCfg.corner2, 0.05f, fsOs);
             c.inHp.setCutoff (typeCfg.inHp, fsOs);
             c.midHp.setCutoff (typeCfg.midHp, fsOs);
             c.outHp.setCutoff (45.0f, fsOs);
@@ -381,10 +472,10 @@ private:
 
     void hardResetCore() noexcept
     {
+        quad.reset();
         for (auto& c : chans)
         {
-            c.s1.reset();
-            c.s2.reset();
+            c.stage2In = 0.0f;
             c.inHp.reset();
             c.midHp.reset();
             c.outHp.reset();
@@ -401,7 +492,7 @@ private:
     {
         Oversampler os;
         DelayLine padLine, dry, stackLine;
-        DiodeStage s1, s2;
+        float stage2In = 0.0f;
         OnePole inHp, midHp, outHp, rectHp, toneLp, toneHp, fizz;
         Biquad body;
         DcBlock dc;
@@ -411,6 +502,7 @@ private:
     };
 
     Channel chans[2];
+    DiodeQuad quad;
     ModuleGate gate;
     ModeSwitch typeSwitch, voiceSwitch;
     EnvFollower envFast, envSlow;
