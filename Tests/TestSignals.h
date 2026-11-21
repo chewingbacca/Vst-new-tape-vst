@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,71 @@ inline bool writeWav (const std::string& path, const Stereo& s)
     std::fwrite (interleaved.data(), sizeof (float), interleaved.size(), f);
     std::fclose (f);
     return true;
+}
+
+/** Minimal WAV reader: 16/24-bit PCM or 32-bit float, mono or stereo. */
+inline bool readWav (const std::string& path, Stereo& s)
+{
+    FILE* f = std::fopen (path.c_str(), "rb");
+    if (f == nullptr)
+        return false;
+
+    char id[4];
+    uint32_t size = 0;
+    uint16_t format = 0, channels = 0, bits = 0;
+    uint32_t rate = 0;
+    bool ok = std::fread (id, 1, 4, f) == 4 && std::fread (&size, 4, 1, f) == 1 && std::fread (id, 1, 4, f) == 4;
+
+    while (ok && std::fread (id, 1, 4, f) == 4 && std::fread (&size, 4, 1, f) == 1)
+    {
+        if (std::memcmp (id, "fmt ", 4) == 0)
+        {
+            std::vector<unsigned char> fmt (size);
+            if (std::fread (fmt.data(), 1, size, f) != size || size < 16)
+                break;
+            std::memcpy (&format, fmt.data(), 2);
+            std::memcpy (&channels, fmt.data() + 2, 2);
+            std::memcpy (&rate, fmt.data() + 4, 4);
+            std::memcpy (&bits, fmt.data() + 14, 2);
+            if (format == 0xFFFE && size >= 26)
+                std::memcpy (&format, fmt.data() + 24, 2);
+        }
+        else if (std::memcmp (id, "data", 4) == 0)
+        {
+            if (channels == 0 || bits == 0)
+                break;
+            const size_t bytesPer = bits / 8;
+            const size_t frames = size / (bytesPer * channels);
+            std::vector<unsigned char> raw (frames * bytesPer * channels);
+            if (std::fread (raw.data(), 1, raw.size(), f) != raw.size())
+                break;
+            s.sampleRate = rate;
+            s.l.assign (frames, 0.0f);
+            s.r.assign (frames, 0.0f);
+            for (size_t i = 0; i < frames; ++i)
+                for (size_t c = 0; c < std::min<size_t> (channels, 2); ++c)
+                {
+                    const unsigned char* p = raw.data() + (i * channels + c) * bytesPer;
+                    float v = 0.0f;
+                    if (format == 3 && bits == 32) { std::memcpy (&v, p, 4); }
+                    else if (bits == 16) { int16_t t; std::memcpy (&t, p, 2); v = static_cast<float> (t) / 32768.0f; }
+                    else if (bits == 24) { const int32_t t = (p[0] << 8) | (p[1] << 16) | (static_cast<int32_t> (static_cast<signed char> (p[2])) << 24);
+                                           v = static_cast<float> (t) / 2147483648.0f; }
+                    else if (bits == 32) { int32_t t; std::memcpy (&t, p, 4); v = static_cast<float> (t) / 2147483648.0f; }
+                    (c == 0 ? s.l : s.r)[i] = v;
+                }
+            if (channels == 1)
+                s.r = s.l;
+            std::fclose (f);
+            return true;
+        }
+        else
+        {
+            std::fseek (f, static_cast<long> (size + (size & 1)), SEEK_CUR);
+        }
+    }
+    std::fclose (f);
+    return false;
 }
 
 struct Lcg

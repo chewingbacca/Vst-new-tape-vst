@@ -104,7 +104,14 @@ Stereo makeSignal (const Options& o)
     const double arg = o.signal.find (':') == std::string::npos ? 0.0 : std::atof (o.signal.substr (o.signal.find (':') + 1).c_str());
 
     Stereo s;
-    if (kind == "strum")        s = testsig::guitarPhrase (o.sr, o.seconds);
+    if (kind == "file")
+    {
+        // --signal file:/path/to/input.wav  (must match --sr)
+        if (! testsig::readWav (o.signal.substr (5), s))
+            std::fprintf (stderr, "could not read %s\n", o.signal.substr (5).c_str());
+        s.sampleRate = o.sr;
+    }
+    else if (kind == "strum")        s = testsig::guitarPhrase (o.sr, o.seconds);
     else if (kind == "impulse") s = testsig::impulse (o.sr, o.seconds, level);
     else if (kind == "sweep")   s = testsig::sweep (o.sr, o.seconds, 20.0, 20000.0, level);
     else if (kind == "sine")    s = testsig::sine (o.sr, o.seconds, arg > 0.0 ? arg : 440.0, level);

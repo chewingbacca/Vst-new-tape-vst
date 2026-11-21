@@ -99,6 +99,29 @@ def spectrum_png(path, out, start=0.0, dur=None, title=None):
     fig.tight_layout(); fig.savefig(out, dpi=80); plt.close(fig)
 
 
+def transfer_png(pairs, out, title=None, smooth_oct=1 / 12):
+    """pairs: list of (label, input_wav, output_wav). Plots |Y/X| in dB (fractional-octave smoothed)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(12, 5.5))
+    for label, fin, fout in pairs:
+        x, sr = load(fin); y, _ = load(fout)
+        n = min(len(x), len(y))
+        X = np.fft.rfft(x[:n, 0]); Y = np.fft.rfft(y[:n, 0])
+        f = np.fft.rfftfreq(n, 1 / sr)
+        centres = 20 * 2 ** np.arange(0, np.log2(sr / 2 / 20), smooth_oct)
+        mag = []
+        for c in centres:
+            lo, hi = c * 2 ** (-smooth_oct), c * 2 ** (smooth_oct)
+            sel = (f >= lo) & (f < hi)
+            mag.append(10 * np.log10((np.sum(np.abs(Y[sel]) ** 2) + 1e-30) / (np.sum(np.abs(X[sel]) ** 2) + 1e-30)) if sel.any() else np.nan)
+        ax.semilogx(centres, mag, label=label, lw=1.2)
+    ax.set_xlim(20, 20000); ax.set_ylim(-36, 18); ax.grid(True, which="both", alpha=0.3); ax.legend()
+    ax.set_title(title or "transfer"); ax.set_xlabel("Hz"); ax.set_ylabel("dB")
+    fig.tight_layout(); fig.savefig(out, dpi=80); plt.close(fig)
+
+
 def envelope(path, hop_s=0.1):
     x, sr = load(path)
     hop = int(hop_s * sr)
@@ -117,6 +140,10 @@ if __name__ == "__main__":
         start = float(sys.argv[sys.argv.index("--start") + 1]) if "--start" in sys.argv else 0.0
         dur = float(sys.argv[sys.argv.index("--dur") + 1]) if "--dur" in sys.argv else None
         spectrum_png(sys.argv[2], sys.argv[3], start, dur)
+    elif cmd == "transfer":
+        # analyze.py transfer out.png input.wav label1=out1.wav label2=out2.wav ...
+        pairs = [(a.split("=")[0], sys.argv[3], a.split("=")[1]) for a in sys.argv[4:]]
+        transfer_png(pairs, sys.argv[2])
     elif cmd == "env":
         e = envelope(sys.argv[2])
         print(" ".join(f"{v:.0f}" for v in e))

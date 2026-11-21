@@ -420,6 +420,58 @@ struct ModuleGate
     }
 };
 
+/** Auto-swell: on each detected note onset the gain drops and fades back in, softening pick attacks
+    like a volume pedal rocked by hand. amount = 0 disables it (gain stays at exactly 1). */
+struct AutoSwell
+{
+    EnvFollower fast, slow;
+    float gainTarget = 1.0f, gain = 1.0f, fall = 0.01f, rate = 48000.0f;
+    int holdoff = 0;
+
+    void prepare (float fs) noexcept
+    {
+        rate = fs;
+        fast.setTimes (0.0008f, 0.02f, fs);
+        slow.setTimes (0.03f, 0.3f, fs);
+        fall = 1.0f - std::exp (-1.0f / (0.003f * fs));
+        reset();
+    }
+    void reset() noexcept
+    {
+        fast.reset();
+        slow.reset();
+        gainTarget = gain = 1.0f;
+        holdoff = 0;
+    }
+
+    float process (float peak, float amount) noexcept
+    {
+        const float slowBefore = slow.env;
+        const float f = fast.process (peak);
+        slow.process (peak);
+
+        if (amount <= 0.0005f)
+        {
+            gainTarget = 1.0f;
+        }
+        else
+        {
+            if (holdoff > 0)
+                --holdoff;
+            else if (f > 0.004f && f > 1.8f * slowBefore + 0.002f)
+            {
+                gainTarget = std::min (gainTarget, 1.0f - 0.97f * std::sqrt (amount));
+                holdoff = static_cast<int> (0.08f * rate);
+            }
+            // rise time 25 ms .. 700 ms
+            const float riseSeconds = 0.025f + 0.675f * amount * amount;
+            gainTarget += (1.0f - gainTarget) * (1.0f - std::exp (-1.0f / (riseSeconds * 0.4f * rate)));
+        }
+        gain += fall * (gainTarget - gain);
+        return gain;
+    }
+};
+
 /** Click-free switching of a discrete mode: dips a gain to zero, swaps, comes back. */
 struct ModeSwitch
 {
