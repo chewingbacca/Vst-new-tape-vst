@@ -146,9 +146,11 @@ const ParamDesc kSynthParams[kEngineParams] = {
 
 // ============================================================================ effects
 static const char* const kStutterDir[] = { "Fwd", "Alt", "Rev" };
+static const char* const kStutterLens[] = { "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "1/64", "1/128" };
+static const char* const kReverseLens[] = { "2 bar", "1 bar", "1/2", "1/4", "1/8", "1/16" };
 const ParamDesc kFxStutter[kFxParams] = {
     { "on",     "On",     0.f, 1.f, 0.f, PD::Discrete, "", kOffOn, 2, "Engage the repeat (lock per step)" },
-    { "length", "Length", 0.f, 1.f, 0.6f, PD::Lin, "", nullptr, 0, "Repeat length (tempo divisions, 1/2 to 1/128)" },
+    DISC ("length", "Length", kStutterLens, 5, "Repeat length"),
     { "pitch",  "Pitch",  -12.f, 12.f, 0.f, PD::Lin, "st", nullptr, 0, "Pitch change per repeat" },
     { "decay",  "Decay",  0.f, 1.f, 0.f, PD::Lin, "", nullptr, 0, "Level drop per repeat" },
     { "shrink", "Shrink", 0.5f, 1.f, 1.f, PD::Lin, "x", nullptr, 0, "Each repeat is this much shorter (accelerating repeats)" },
@@ -158,7 +160,7 @@ const ParamDesc kFxStutter[kFxParams] = {
 };
 const ParamDesc kFxReverse[kFxParams] = {
     { "on",     "On",     0.f, 1.f, 0.f, PD::Discrete, "", kOffOn, 2, "Engage reverse playback" },
-    { "length", "Length", 0.f, 1.f, 0.5f, PD::Lin, "", nullptr, 0, "Reversed chunk length (tempo divisions)" },
+    DISC ("length", "Length", kReverseLens, 3, "Reversed chunk length"),
     { "speed",  "Speed",  0.25f, 4.f, 1.f, PD::Exp, "x", nullptr, 0, "Reverse playback speed" },
     { "fade",   "Fade",   0.f, 1.f, 0.3f, PD::Lin, "", nullptr, 0, "Crossfade at chunk edges" },
     { "feedback", "Feedback", 0.f, 0.95f, 0.f, PD::Lin, "", nullptr, 0, "Feed reversed audio back into the buffer" },

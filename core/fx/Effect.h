@@ -38,6 +38,11 @@ public:
     virtual bool isTransparentWhenIdle() const { return false; }
 };
 
+// Value text for effect parameters whose meaning depends on other parameters of the same effect
+// (a delay time that is milliseconds or a tempo division, a bipolar exponential shift in Hz ...).
+// Returns false to use the default descriptor formatting.
+bool formatFxParamCustom (int fxType, int index, const float* params /* kFxParams */, char* buf, int bufSize);
+
 // Returns nullptr for Fx::None or unknown types. Not real-time safe.
 std::unique_ptr<Effect> createEffect (int fxType);
 
