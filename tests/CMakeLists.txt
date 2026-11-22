@@ -1,0 +1,6 @@
+file(GLOB AUTOMATA_TEST_SRC CONFIGURE_DEPENDS *.cpp)
+if(AUTOMATA_TEST_SRC)
+  add_executable(automata_tests ${AUTOMATA_TEST_SRC})
+  target_link_libraries(automata_tests PRIVATE automata_core)
+  add_test(NAME core_tests COMMAND automata_tests)
+endif()
