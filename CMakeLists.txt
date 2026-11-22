@@ -82,14 +82,13 @@ if(AUTOMATA_BUILD_PLUGIN)
     JUCE_MODAL_LOOPS_PERMITTED=0
     JUCE_SILENCE_XCODE_15_LINKER_WARNING=1)
   target_link_libraries(Automata
-    PUBLIC
-      automata_core
+    PRIVATE
       juce::juce_audio_utils
       juce::juce_audio_formats
       juce::juce_gui_extra
-    PRIVATE
-      juce::juce_recommended_config_flags
-      juce::juce_recommended_lto_flags)
+    PUBLIC
+      automata_core
+      juce::juce_recommended_config_flags)
 endif()
 
 # ---------------------------------------------------------------- tests & tools
