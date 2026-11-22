@@ -124,6 +124,7 @@ const ParamDesc kResonatorParams[kEngineParams] = {
 // ---- Synth
 static const char* const kSynthModes[] = { "Analog", "WT Basic", "WT Vowel", "WT Metal", "WT Digital", "WT Organ" };
 static const char* const kUnison[] = { "1", "2", "3", "5", "7" };
+static const char* const kPhaseModes[] = { "Free", "Reset" };
 const ParamDesc kSynthParams[kEngineParams] = {
     { "wave1",  "Wave 1", 0.f, 1.f, 0.4f, PD::Lin, "", nullptr, 0, "Osc 1 shape: triangle > saw > square > pulse, or wavetable position" },
     DISC ("mode", "Osc Mode", kSynthModes, 0, "Analog-style oscillators or a wavetable set"),
@@ -140,7 +141,7 @@ const ParamDesc kSynthParams[kEngineParams] = {
     { "unidet", "Uni Det", 0.f, 100.f, 18.f, PD::Pow2, "ct", nullptr, 0, "Unison detune spread" },
     { "drift",  "Drift",  0.f, 1.f, 0.1f, PD::Lin, "", nullptr, 0, "Slow pitch drift, wow and flutter" },
     { "width",  "Width",  0.f, 1.f, 0.5f, PD::Lin, "", nullptr, 0, "Stereo spread of unison voices and oscillators" },
-    DISC ("phase", "Phase", ((const char* const[]) { "Free", "Reset" }), 0, "Reset oscillator phase on each note"),
+    DISC ("phase", "Phase", kPhaseModes, 0, "Reset oscillator phase on each note"),
 };
 
 // ============================================================================ effects
@@ -325,7 +326,7 @@ static const char* const kLfoModes[]    = { "Free", "Trig", "One-shot" };
 static const ParamDesc kTrackCommon[TP::count] = {
     { "level",  "Level",  0.f, 1.f, 0.7071f, PD::Lin, "", nullptr, 0, "Track level" },
     { "pan",    "Pan",    -1.f, 1.f, 0.f, PD::Lin, "", nullptr, 0, "Pan" },
-    { "tune",   "Tune",   -36.f, 36.f, 0.f, PD::Lin, "st", nullptr, 0, "Coarse tuning" },
+    { "coarse", "Tune",   -36.f, 36.f, 0.f, PD::Lin, "st", nullptr, 0, "Coarse tuning" },
     { "fine",   "Fine",   -100.f, 100.f, 0.f, PD::Lin, "ct", nullptr, 0, "Fine tuning" },
     { "glide",  "Glide",  0.f, 2.f, 0.f, PD::Pow3, "s", nullptr, 0, "Portamento time (slides always glide)" },
     UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED, UNUSED,
@@ -436,6 +437,8 @@ const ParamDesc& trackParamDesc (int tp, const TrackParamContext& ctx)
     if (tp == TP::FxBMix) return kFxMix;
     return kTrackCommon[tp];
 }
+
+const ParamDesc& commonTrackParamDesc (int tp) { return kTrackCommon[clamp (tp, 0, TP::count - 1)]; }
 
 const ParamDesc& globalParamDesc (int gp, const uint8_t* fxTypes)
 {

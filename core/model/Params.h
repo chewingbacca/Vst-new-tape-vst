@@ -175,6 +175,8 @@ const ParamDesc& fxMixDesc();
 // the E* and Fx* slots change meaning with the selected engine / effect.
 struct TrackParamContext { int engine = 0; int fxA = 0; int fxB = 0; };
 const ParamDesc& trackParamDesc (int tp, const TrackParamContext& ctx);
+// For params that do not depend on the engine / effect selection.
+const ParamDesc& commonTrackParamDesc (int tp);
 const ParamDesc& globalParamDesc (int gp, const uint8_t* fxTypes /* kNumFxSlots, may be null */);
 // Stable serialisation keys, independent of engine ("e3", "fxa2", "cutoff" ...)
 const char* trackParamKey (int tp);
