@@ -91,12 +91,13 @@ public:
     void noteOn (const EngineNote& n, const float* e) override
     {
         const ParamDesc* d = kDrumParams;
+        const int prevModel = model;
         model = d[Model].toIndex (e[Model]);
         vel = clamp01 (n.velocity);
         noiseL.seed (n.seed * 2u + 1u); noiseR.seed (n.seed * 2u + 7919u);
         stereo = (model == Hat || model == Clap || model == Metal || model == Snare) && d[Spread].toPhys (e[Spread]) > 0.02f;
 
-        if (! n.legato || ! active)
+        if (! n.legato || ! active || model != prevModel)
         {
             clearState();
             // squares start at seeded phases (like free-running analog oscillators); sines at 0

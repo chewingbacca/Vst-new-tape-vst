@@ -964,7 +964,7 @@ void AudioEngine::process (ProcessIO& io)
             allNotesOff (false);
             lastBarHandled = INT64_MIN;
         }
-        curBeat = b0;
+        blockBeat = b0; curBeat = std::round (b0 * 4294967296.0) / 4294967296.0;
         sequenceBlock (n, b0, beatsPerSample, continuous);
         prevEndBeat = b0 + (double) n * beatsPerSample;
         if (! hostPlaying) internalBeat = prevEndBeat;
@@ -1000,7 +1000,13 @@ void AudioEngine::process (ProcessIO& io)
         renderSlice (io, pos, len);
         pos += len;
         ctrlPhase = (ctrlPhase + len) % kCtrl;
-        if (running) curBeat += (double) len * beatsPerSample;
+        if (running)
+        {
+            // From the block start (not accumulated), snapped to a 2^-32 beat grid: the same sample gets the
+            // same position whatever the host's block boundaries, so synced LFOs and effects are split-independent.
+            const double b = blockBeat + (double) pos * beatsPerSample;
+            curBeat = std::round (b * 4294967296.0) / 4294967296.0;
+        }
     }
     advancePendingOffs (n);
 

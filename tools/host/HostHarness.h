@@ -71,6 +71,7 @@ inline RenderResult render (AutomataProcessor& proc, const RenderOptions& o)
     juce::AudioBuffer<float> buf (juce::jmax (2, totalCh), juce::jmax (o.block, 4096));
     juce::MidiBuffer midi;
     double beat = o.startBar * beatsPerBar;                       // host position in beats
+    double locateBeat = beat; juce::int64 playedSinceLocate = 0;
     int loopsLeft = o.loopPasses - 1;
     const double loopStart = o.loopStartBar * beatsPerBar, loopEnd = o.loopEndBar * beatsPerBar;
     juce::uint32 rnd = 0x1234567u;
@@ -91,7 +92,7 @@ inline RenderResult render (AutomataProcessor& proc, const RenderOptions& o)
         if (playing && o.loopEndBar > 0 && loopsLeft > 0)
         {
             const double toEnd = (loopEnd - beat) * spb;
-            if (toEnd <= 0.5) { beat = loopStart; --loopsLeft; }
+            if (toEnd <= 0.5) { beat = loopStart; locateBeat = loopStart; playedSinceLocate = 0; --loopsLeft; }
             else if (toEnd < (double) n) n = juce::jmax (1, (int) std::floor (toEnd + 0.5));
         }
 
@@ -141,7 +142,12 @@ inline RenderResult render (AutomataProcessor& proc, const RenderOptions& o)
             e.data[0] = m.getRawData()[0]; e.data[1] = m.getRawDataSize() > 1 ? m.getRawData()[1] : 0; e.data[2] = m.getRawDataSize() > 2 ? m.getRawData()[2] : 0;
             res.midiOut.push_back (e);
         }
-        if (playing) beat += (double) n / spb;
+        if (playing)
+        {
+            // like a real host: position from the integer sample count since the last relocation
+            playedSinceLocate += n;
+            beat = locateBeat + (double) playedSinceLocate / spb;
+        }
         done += n;
         if ((done & 0xffff) < n) proc.housekeeping();
     }

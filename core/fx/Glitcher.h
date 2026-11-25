@@ -24,6 +24,7 @@ public:
     {
         buf[0].reset(); buf[1].reset();
         type = GlitchType::None; wet = 0.f; left = 0; holdL = holdR = 0.f; holdCount = 0;
+        prevL = prevR = 0.f; dcL = dcR = 0.f; declickLeft = 0; declickArm = false;
     }
 
     bool active() const { return type != GlitchType::None || wet > 0.f; }
@@ -31,6 +32,7 @@ public:
     void trigger (const GlitchCmd& c, double bpm)
     {
         if (c.type == GlitchType::None) return;
+        declickArm = true;      // a new glitch may start on a different value than the one sounding now
         const double spb = sr * 60.0 / std::max (20.0, bpm);
         const int maxLen = buf[0].capacity() / 2 - 64;
         total = clamp ((int) (c.beats * spb), fadeLen * 4, maxLen);
@@ -50,7 +52,7 @@ public:
         {
             const float inL = l[i], inR = r[i];
             buf[0].write (inL); buf[1].write (inR);
-            if (type == GlitchType::None && wet <= 0.f) continue;
+            if (type == GlitchType::None && wet <= 0.f && declickLeft == 0) { prevL = inL; prevR = inR; continue; }
 
             float wl = inL, wr = inR;
             float target = 1.f;
@@ -72,6 +74,8 @@ public:
                         float w = 1.f;
                         if (o < fadeLen) w = (float) o / (float) fadeLen;
                         if (remain < (double) fadeLen) w = std::min (w, (float) (remain / (double) fadeLen));
+                        // slowed-down repeats run out of slot before they run out of material: fade at the slot end too
+                        if (slice - 1 - o < fadeLen) w = std::min (w, (float) (slice - 1 - o) / (float) fadeLen);
                         w *= std::pow (0.92f, (float) (k - 1) * (1.f - amount * 0.5f));
                         wl *= w; wr *= w;
                         break;
@@ -129,8 +133,18 @@ public:
             const float step = 1.f / (float) fadeLen;
             if (wet < target) wet = std::min (target, wet + step);
             else if (wet > target) wet = std::max (target, wet - step);
-            l[i] = inL + (wl - inL) * wet;
-            r[i] = inR + (wr - inR) * wet;
+            float ol = inL + (wl - inL) * wet;
+            float orr = inR + (wr - inR) * wet;
+            // declicker: on a retrigger, measure the jump on the first sample and fade it out
+            if (declickArm) { dcL = prevL - ol; dcR = prevR - orr; declickLeft = fadeLen; declickArm = false; }
+            if (declickLeft > 0)
+            {
+                const float gd = (float) declickLeft / (float) fadeLen;
+                ol += dcL * gd; orr += dcR * gd;
+                --declickLeft;
+            }
+            l[i] = prevL = ol;
+            r[i] = prevR = orr;
         }
     }
 
@@ -142,6 +156,9 @@ private:
     float pitchStep = 0.f, amount = 1.f, wet = 0.f;
     float holdL = 0.f, holdR = 0.f, crushStep = 0.01f; int holdCount = 0, crushHold = 4;
     double readPos = 0.0;
+    float prevL = 0.f, prevR = 0.f, dcL = 0.f, dcR = 0.f;
+    int declickLeft = 0;
+    bool declickArm = false;
 };
 
 } // namespace atm

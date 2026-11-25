@@ -143,6 +143,9 @@ void Voice::updateFilterTargets (const float* p)
 void Voice::control (const float* p, int samplesUntilNext)
 {
     if (! isActive) return;
+    // an engine that has run out of sound frees the voice; decided here, on the control grid,
+    // so the result never depends on how the host splits its buffers
+    if (eng != nullptr && eng->finished() && amp.stage != Envelope::Kill && amp.stage != Envelope::Idle) amp.kill (0.004f);
 
     // envelopes
     {
@@ -208,6 +211,16 @@ inline float Voice::shape (float x) const
 void Voice::render (float* outL, float* outR, int n)
 {
     if (! isActive || eng == nullptr) return;
+
+    // If the gate ends inside this slice, render up to that sample first, so the engine hears its
+    // note-off on the exact sample (bowed and gated engines change their sound at note-off).
+    if (gateOpen && gateLeft > 0 && gateLeft < n)
+    {
+        const int k = gateLeft;
+        render (outL, outR, k);
+        render (outL + k, outR + k, n - k);
+        return;
+    }
 
     eng->render (bufL, bufR, n);
     const bool stereo = eng->isStereo();
@@ -300,7 +313,6 @@ void Voice::render (float* outL, float* outR, int n)
     }
 
     if (! amp.active()) { isActive = false; gateOpen = false; }
-    else if (eng->finished() && amp.stage != Envelope::Kill) amp.kill (0.004f);
 }
 
 } // namespace atm

@@ -12,7 +12,7 @@ Long Boom 808     | Kick | drum | kick | model=Kick tune=-7 decay=2.2 sweep=0.35
 Click Kick        | Kick | drum | kick | model=Kick tune=7 decay=0.09 sweep=0.75 sweept=0.008 snap=0.8 noise=0.2 ndecay=0.01 ncolor=0.8
 Folded Kick       | Kick | drum | kick | model=Kick tune=-2 decay=0.35 sweep=0.6 sweept=0.03 shape=0.65 dirt=0.3 snap=0.3
 Zap Kick          | Kick | drum | kick | model=Kick tune=3 decay=0.25 sweep=1 sweept=0.09 snap=0.2 fm=0.15 fmratio=1.5
-Tape Kick         | Kick | drum | kick | model=Kick tune=-3 decay=0.4 sweep=0.45 sweept=0.03 snap=0.35 dirt=0.45 drive=0.25 drvtype=Tube cutoff=6000 flttype=LP12
+Tape Kick         | Kick | drum | kick | model=Kick tune=-3 decay=0.4 sweep=0.45 sweept=0.03 snap=0.35 dirt=0.45 drive=0.25 drvtype=Tube cutoff=6000 flttype=LP12 level=0.68
 Rubber Kick       | Kick | drum | kick | model=Kick tune=-9 decay=0.7 sweep=0.25 sweept=0.12 snap=0.15 hold=0.04
 Pillow Kick       | Kick | drum | kick | model=Kick tune=-4 decay=0.3 sweep=0.3 sweept=0.025 snap=0 noise=0.1 ndecay=0.05 ncolor=0.2 flttype=LP24 cutoff=900
 Grit Kick         | Kick | drum | kick | model=Kick tune=0 decay=0.28 sweep=0.55 sweept=0.025 snap=0.5 dirt=0.8 noise=0.3 ncolor=0.4
@@ -110,14 +110,14 @@ Pluck Bass        | Synth Bass | synth | bass | wave1=0.5 flttype=LP24 cutoff=25
 Wobble Bass       | Synth Bass | synth | bass | wave1=0.45 wave2=0.75 mix=0.4 flttype=LP24 cutoff=500 res=0.5 base=36 lfo1rate=0.62 lfo1shape=Triangle mod=lfo1:cutoff:0.3
 Fold Bass         | Synth Bass | synth | bass | wave1=0.1 sub=0.3 drive=0.65 drvtype=Fold flttype=LP12 cutoff=3000 base=36 mod=modenv:drive:0.3 modd=0.3 mods=0
 Sync Bass         | Synth Bass | synth | bass | wave1=0.45 wave2=0.45 mix=1 sync=3.5 flttype=LP24 cutoff=2500 res=0.2 base=36 mod=modenv:sync:0.35 modd=0.25 mods=0
-Tape Bass         | Synth Bass | synth | bass | wave1=0.2 sub=0.3 drift=0.5 flttype=LP24 cutoff=700 drive=0.3 drvtype=Tube base=36
+Tape Bass         | Synth Bass | synth | bass | wave1=0.2 sub=0.3 drift=0.5 flttype=LP24 cutoff=700 drive=0.3 drvtype=Tube base=36 level=0.64
 Organ Bass        | Synth Bass | synth | bass | mode=5 wave1=0.3 flttype=LP12 cutoff=1500 base=36 ampa=0.003
 Vowel Bass        | Synth Bass | synth | bass | mode=2 wave1=0.2 flttype=LP24 cutoff=2500 base=36 mod=modenv:wave1:0.5 modd=0.4 mods=0
 # ---------------------------------------------------------------- SYNTH LEAD
 Square Lead       | Lead | synth | lead | wave1=0.75 pw=0.4 flttype=LP24 cutoff=3500 res=0.2 glide=0.03 lfo1rate=0.55 mod=lfo1:pw:0.1
 Sync Lead         | Lead | synth | lead | wave1=0.45 wave2=0.45 mix=0.8 sync=2.5 flttype=LP24 cutoff=5000 mod=lfo1:sync:0.2 lfo1rate=0.4
 Chip Lead         | Lead | synth | lead | wave1=0.9 pw=0.25 flttype=Off ampd=0.2 amps=0.5 glide=0.01
-Detuned Lead      | Lead | synth | lead | wave1=0.45 unison=5 unidet=25 width=0.8 flttype=LP24 cutoff=4000 res=0.15
+Detuned Lead      | Lead | synth | lead | wave1=0.45 unison=5 unidet=25 width=0.8 flttype=LP24 cutoff=4000 res=0.15 level=0.65
 Whistle Lead      | Lead | synth | lead | wave1=0 flttype=BP cutoff=1800 res=0.6 fltkey=1 drift=0.3 ampa=0.02
 Digital Lead      | Lead | synth | lead | mode=4 wave1=0.4 flttype=LP12 cutoff=6000 mod=lfo1:wave1:0.3 lfo1rate=0.35
 Metallic Lead     | Lead | synth | lead | mode=3 wave1=0.5 flttype=LP24 cutoff=4000 res=0.3 fxa=delay a.time=0.45 a.feedback=0.35 a.mix=0.2
@@ -125,12 +125,12 @@ FM Glass Lead     | Lead | synth | lead | wave1=0.1 wave2=0 pitch2=12 fm=0.35 fl
 Warble Lead       | Lead | synth | lead | wave1=0.5 drift=0.9 flttype=LP24 cutoff=2500 glide=0.08 ampa=0.01
 Sine Arp          | Lead | synth | lead | wave1=0 flttype=Off ampd=0.25 amps=0 ampr=0.1 senda=0.3
 # ---------------------------------------------------------------- PAD / WARM
-Warm Tape Pad     | Pad | synth | pad | wave1=0.45 wave2=0.45 detune=12 mix=0.5 unison=3 unidet=18 drift=0.6 width=0.8 flttype=LP24 cutoff=1400 res=0.1 ampa=0.6 ampd=2 amps=0.8 ampr=1.5 poly=1 senda=0.35
+Warm Tape Pad     | Pad | synth | pad | wave1=0.45 wave2=0.45 detune=12 mix=0.5 unison=3 unidet=18 drift=0.6 width=0.8 flttype=LP24 cutoff=1400 res=0.1 ampa=0.6 ampd=2 amps=0.8 ampr=1.5 poly=1 senda=0.35 level=0.64
 Dusty Strings     | Pad | synth | pad | wave1=0.45 unison=5 unidet=30 drift=0.7 width=1 flttype=LP12 cutoff=2200 ampa=0.8 ampr=2 amps=1 poly=1 lfo1rate=0.25 mod=lfo1:cutoff:0.06
 Glass Pad         | Pad | synth | pad | mode=4 wave1=0.3 wave2=0.6 mix=0.5 detune=8 unison=3 width=0.9 flttype=LP24 cutoff=5000 ampa=1 ampr=2.5 amps=1 poly=1 mod=lfo1:wave1:0.2 lfo1rate=0.2
 Choir Pad         | Pad | synth | pad | mode=2 wave1=0.5 wave2=0.3 mix=0.4 unison=5 unidet=15 width=1 drift=0.4 flttype=LP24 cutoff=3000 ampa=0.9 ampr=2 amps=1 poly=1 lfo1rate=0.15 mod=lfo1:wave1:0.25
-Wobbly VHS Pad    | Pad | synth | pad | wave1=0.3 wave2=0.45 detune=20 mix=0.5 drift=1 width=0.7 flttype=LP24 cutoff=1100 ampa=0.5 ampr=1.8 amps=0.9 poly=1 drive=0.2 drvtype=Tube senda=0.4
-Organ Pad         | Pad | synth | pad | mode=5 wave1=0.6 unison=2 unidet=10 width=0.6 flttype=LP12 cutoff=4000 ampa=0.2 ampr=0.8 amps=1 poly=1
+Wobbly VHS Pad    | Pad | synth | pad | wave1=0.3 wave2=0.45 detune=20 mix=0.5 drift=1 width=0.7 flttype=LP24 cutoff=1100 ampa=0.5 ampr=1.8 amps=0.9 poly=1 drive=0.2 drvtype=Tube senda=0.4 level=0.64
+Organ Pad         | Pad | synth | pad | mode=5 wave1=0.6 unison=2 unidet=10 width=0.6 flttype=LP12 cutoff=4000 ampa=0.2 ampr=0.8 amps=1 poly=1 level=0.56
 Dark Pad          | Pad | synth | pad | wave1=0.45 wave2=0.75 pitch2=-12 mix=0.4 unison=3 drift=0.5 flttype=LP24 cutoff=600 res=0.25 ampa=1.5 ampr=3 amps=1 poly=1
 Bright Shimmer    | Pad | synth | pad | wave1=0.45 unison=7 unidet=35 width=1 flttype=HP12 cutoff=300 ampa=1.2 ampr=3 amps=1 poly=1 fxa=cloud a.decay=12 a.shimmer=0.4 a.mix=0.5
 Hollow Fifths     | Pad | synth | pad | wave1=0.1 wave2=0.1 pitch2=7 mix=0.5 detune=5 drift=0.4 flttype=LP24 cutoff=1800 ampa=0.7 ampr=2 amps=1 poly=1
@@ -167,8 +167,8 @@ Frozen Choir      | Granular | granular | pad | sample=Vox_Ah pos=0.4 size=0.2 d
 Grain Glitch      | Granular | granular | fx | sample=Brk_Clatter pos=0.5 size=0.02 density=120 spray=0.6 scatter=12 quant=Octaves jitter=0.8 amps=1 ampr=0.3
 Scanning Texture  | Granular | granular | pad | sample=Tex_Static pos=0 size=0.08 density=50 scan=0.3 spray=0.3 spread=0.9 amps=1 ampa=0.5 ampr=1
 Shimmer Grains    | Granular | granular | pad | sample=Tone_FMBell pos=0.1 size=0.15 density=30 scatter=12 quant=Octaves spread=1 amps=1 ampa=0.8 ampr=3 fxa=cloud a.decay=10 a.mix=0.4
-Buzz Swarm        | Granular | granular | fx | sample=Tone_Saw pos=0.2 size=0.01 density=200 spray=0.4 scatter=3 jitter=1 amps=1 ampr=0.4
-Rev Grain Pad     | Granular | granular | pad | sample=Tone_Glass pos=0.5 size=0.3 density=20 revprob=0.5 spread=0.8 amps=1 ampa=1.2 ampr=3
+Buzz Swarm        | Granular | granular | fx | sample=Tone_Saw pos=0.2 size=0.01 density=200 spray=0.4 scatter=3 jitter=1 amps=1 ampr=0.4 level=0.64
+Rev Grain Pad     | Granular | granular | pad | sample=Tone_Glass pos=0.5 size=0.3 density=20 revprob=0.5 spread=0.8 amps=1 ampa=1.2 ampr=3 gain=14
 Grain Stutter     | Granular | granular | perc | sample=Brk_Ghost pos=0.25 size=0.05 density=24 jitter=0 spray=0 amps=1 ampr=0.05
 # ---------------------------------------------------------------- FX / NOISE
 White Riser       | FX | drum | fx | model=Hat decay=3 noise=1 ndecay=3 tone=0 flttype=BP cutoff=800 res=0.5 mod=modenv:cutoff:0.5 moda=2 mods=1 amps=1 ampa=2

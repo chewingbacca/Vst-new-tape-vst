@@ -50,6 +50,18 @@ Keep this file current: it is how work survives a context reset.
 - [x] Offline harness, render tests, snapshot tool, pluginval passes at strictness 10 (re-run after DSP changes)
 - [x] README
 
+## Determinism fixes (all found by the render tests)
+- Voice frees a finished engine on the control grid (was: end of slice).
+- Voice splits its render at the gate-off sample so the engine hears note-off on the exact sample.
+- Engine song position = block start + offset, snapped to 2^-32 beats (was accumulated per slice).
+- Harness host computes ppq from the integer sample count, like real hosts.
+- Glitcher: slowed repeats now fade at the slot end (real click); declicker on retrigger.
+
+## Verified (last run)
+- 69 unit tests pass; render tests (40 kits, 160 voice presets) pass at 44.1/48/96 kHz;
+  pluginval strictness 10 (with GUI tests) passes; clean build from an empty build dir with fetched JUCE works.
+- Worst kit CPU: 9.5 % (48 kHz), 12.1 % (96 kHz) of one core.
+
 ## Known issues / next
 - Kits peak at the limiter ceiling (rms around -12..-15 dB); acid kits lean on the limiter hardest. Gain staging could be gentler.
 - GrainDelay costs 1.6 % at maximum density and size.

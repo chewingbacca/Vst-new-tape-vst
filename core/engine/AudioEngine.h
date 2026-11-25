@@ -206,7 +206,7 @@ private:
     bool   internalPlay = false;
     double internalBeat = 0.0;
     double prevEndBeat = 0.0, prevRangeEnd = 0.0;
-    double curBpm = 120.0, curBeat = 0.0, beatsPerSample = 0.0;
+    double curBpm = 120.0, curBeat = 0.0, blockBeat = 0.0, beatsPerSample = 0.0;
     double beatsPerBar = 4.0, barOffset = 0.0;
     bool   running = false;
     int64_t lastBarHandled = INT64_MIN;

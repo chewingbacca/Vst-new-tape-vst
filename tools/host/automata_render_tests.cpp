@@ -39,7 +39,13 @@ int countClicks (const std::vector<float>& x, double sr)
         // neighbourhood slope (excluding this sample)
         float local = 0.f;
         for (int k = 2; k < win; ++k) local = std::max (local, std::max (std::fabs (x[i - (size_t) k] - x[i - (size_t) k - 1]), std::fabs (x[i + (size_t) k] - x[i + (size_t) k - 1])));
-        if (d > 4.f * local + 0.05f) { ++clicks; i += (size_t) win; }
+        if (d <= 4.f * local + 0.05f) continue;
+        // a click is isolated: a waveform edge (saw, square, driven bass) repeats every cycle
+        const size_t span = (size_t) (sr * 0.04);
+        bool periodic = false;
+        for (size_t k = i > span ? i - span : 1; k < std::min (x.size(), i + span) && ! periodic; ++k)
+            if ((k + 2 < i || k > i + 2) && std::fabs (x[k] - x[k - 1]) > 0.4f * d) periodic = true;   // 40 %: an edge that coincides with a drum attack is larger than its neighbours
+        if (! periodic) { ++clicks; i += (size_t) win; }
     }
     return clicks;
 }

@@ -13,6 +13,10 @@ jump. A happy accident can be kept, locked and refined.
 
 ![Automata](docs/screenshot.png)
 
+The STEPS page in lock mode (an acid line with its cutoff lock lane):
+
+![Steps page](docs/screenshot-steps.png)
+
 ---------------------------------------------------------------------------
 
 ## Build
