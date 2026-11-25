@@ -245,7 +245,11 @@ private:
     {
         const AlgoDef& al = kAlgos[algo];
         const float velIdx = 0.5f + 0.5f * vel;
-        const float a = std::min (1.f, attack);                  // envelopes as they are now
+        // The guard looks at the envelopes as they will be once the 0.7 ms attack is over: judging
+        // the indices by the attack ramp itself let them through unscaled for the first grid steps,
+        // and the guard then caught up only through the 1.5 ms smoothing (a noisy burst at the
+        // onset of high notes).
+        const float a = 1.f;
         float idxNow[kOps], scale[kOps] = { 1.f, 1.f, 1.f, 1.f };
         for (int k = 0; k < kOps; ++k) idxNow[k] = index[k] * velIdx * env[k] * a;
 

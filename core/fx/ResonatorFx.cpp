@@ -80,6 +80,8 @@ public:
 
     void setParams (const float* p, const FxContext&) override
     {
+        // free faded voices here, on the fixed control grid, so the result does not depend on how the host splits buffers
+        for (int v = 0; v < kVoices; ++v) if (live[v] && v >= count && amp[v] < 1.0e-4f) kill (v);
         const float note = kFxResonator[PNote].toPhys (p[PNote]);
         const int chord = clamp (kFxResonator[PChord].toIndex (p[PChord]), 0, kChordCount - 1);
         const float decay = kFxResonator[PDecay].toPhys (p[PDecay]);
@@ -146,7 +148,6 @@ public:
                 }
                 if (c == 1) amp[v] = a;
             }
-            if (ampT == 0.f && amp[v] < 1.0e-4f) kill (v);
         }
         for (int i = 0; i < n; ++i) { l[i] = accL[i] * cn[i]; r[i] = accR[i] * cn[i]; }
     }

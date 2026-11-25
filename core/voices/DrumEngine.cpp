@@ -32,7 +32,7 @@ enum M { Kick, Snare, Hat, Clap, Tom, Metal };
 // Natural pitch of each model at MIDI note 60 (hat / metal: the lowest square oscillator).
 constexpr float kBaseHz[6] = { 50.f, 180.f, 205.3f, 1000.f, 130.f, 205.3f };
 // Output trims that bring every model to about -3 dBFS peak at default settings.
-constexpr float kModelGain[6] = { 0.70f, 0.37f, 3.00f, 0.55f, 0.48f, 0.88f };
+constexpr float kModelGain[6] = { 0.72f, 0.355f, 3.45f, 0.64f, 0.51f, 0.88f };
 // TR-808 metallic oscillators: 205.3, 304.4, 369.6, 522.7, 540, 800 Hz.
 constexpr float kMetalRatio[6] = { 1.f, 1.4827f, 1.8003f, 2.5460f, 2.6303f, 3.8967f };
 
@@ -41,6 +41,16 @@ inline float softLimit (float x)
     const float a = std::fabs (x);
     if (a <= 1.f) return x;
     const float y = 1.f + 0.8f * fastTanh ((a - 1.f) * 1.25f);
+    return x < 0.f ? -y : y;
+}
+
+// Noise-like models (hat, metal, clap) peak differently on every hit. A soft knee from -6 dBFS
+// rounds off the rare coincident peaks, keeping hit-to-hit peak levels close together.
+inline float peakKnee (float x)
+{
+    const float a = std::fabs (x);
+    if (a <= 0.5f) return x;
+    const float y = 0.5f + 0.5f * fastTanh ((a - 0.5f) * 2.f);
     return x < 0.f ? -y : y;
 }
 
@@ -141,6 +151,7 @@ public:
                 // click: noise burst, 2.5 ms (kick) / 4 ms (tom), brighter with tone
                 snapCoef = decayCoef (model == Kick ? 0.0025f : 0.004f, sr);
                 clickF.setCoefs (clamp (700.f * std::pow (20.f, tone), 200.f, ny), 0.35f, sr);
+                toneLP.setCutoff (300.f * std::exp2 (tone * 6.f), sr);          // 808-style tone: 300 Hz .. 19 kHz low-pass
                 nfL.setCoefs (clamp (nHz, 40.f, ny), 0.15f, sr);
                 body2Coef = decayCoef (decay * 0.45f, sr);
                 break;
@@ -183,6 +194,8 @@ public:
             case Clap:
             {
                 clapHz = 1000.f * std::exp2 ((tone - 0.5f) * 3.f) * pitchRatio;   // 350 Hz .. 2.8 kHz at note 60
+                // band-passed noise is louder the wider (higher) the band: keep the level steady
+                clapNorm = 2.2f * clamp (std::sqrt (1000.f / std::max (clapHz, 1.f)), 0.4f, 2.5f);
                 nfL.setCoefs (clamp (nHz * 2.f, 300.f, ny), 0.1f, sr);
                 nfR.setGK (nfL.g, nfL.k);
                 break;
@@ -232,16 +245,19 @@ private:
         const float g = kModelGain[model];
         const float drive = 1.f + dirt * dirt * 24.f;
         const float comp = dirt > 0.001f ? 0.7f / fastTanh (std::min (drive * 0.7f, 4.f)) : 1.f;
+        const bool knee = model == Hat || model == Metal || model == Clap;
         for (int i = 0; i < n; ++i)
         {
             float l = outL[i] * g;
             if (dirt > 0.001f) l = fastTanh (l * drive) * comp;
-            outL[i] = softLimit (dcL.process (l));
+            l = dcL.process (l);
+            outL[i] = knee ? peakKnee (l) : softLimit (l);
             if (stereo)
             {
                 float r = outR[i] * g;
                 if (dirt > 0.001f) r = fastTanh (r * drive) * comp;
-                outR[i] = softLimit (dcR.process (r));
+                r = dcR.process (r);
+                outR[i] = knee ? peakKnee (r) : softLimit (r);
             }
         }
     }
@@ -251,7 +267,7 @@ private:
         ph1 = ph2 = ph3 = 0.f;
         for (auto& p : mph) p = 0.f;
         for (Svf* f : { &nfL, &nfR, &clickF, &mbp1, &mbp2, &mhp, &mbp1R, &mhpR, &clapL, &clapR }) f->reset();
-        dcL.reset(); dcR.reset();
+        dcL.reset(); dcR.reset(); toneLP.reset();
         clapStage = 0; clapLeft = 0;
     }
 
@@ -298,7 +314,7 @@ private:
                 const auto c = clickF.tick (noiseR.next());
                 y += (c.bp * 1.6f + c.lp * 0.6f) * se * clickLv;
             }
-            out[i] = y * tickAttack();
+            out[i] = toneLP.process (y) * tickAttack();
         }
     }
 
@@ -438,11 +454,11 @@ private:
                 ph2 += fmInc; ph2 -= std::floor (ph2);
                 a *= 1.f + fm * (std::sin (kTauF * ph2) - 1.f) * 0.9f;
             }
-            outL[i] = (clapL.bp (nl) * env * 2.2f + nfL.hp (nl) * ne * noiseLv * 0.6f) * a;
+            outL[i] = (clapL.bp (nl) * env * clapNorm + nfL.hp (nl) * ne * noiseLv * 0.6f) * a;
             if (stereo)
             {
                 clapR.setGK (g * (1.f + 0.12f * spread), k);
-                outR[i] = (clapR.bp (lerp (nl, nr, spread)) * env * 2.2f + nfR.hp (lerp (nl, nr, spread)) * ne * noiseLv * 0.6f) * a;
+                outR[i] = (clapR.bp (lerp (nl, nr, spread)) * env * clapNorm + nfR.hp (lerp (nl, nr, spread)) * ne * noiseLv * 0.6f) * a;
             }
         }
     }
@@ -452,7 +468,8 @@ private:
     bool  active = false, stereo = false;
     float vel = 1.f;
     float f0 = 50.f, sweep = 0, tone = 0.5f, noiseLv = 0, snap = 0, fm = 0, fmRatio = 1.5f, shape = 0, spread = 0, dirt = 0;
-    float clapHz = 1000.f;
+    float clapHz = 1000.f, clapNorm = 2.2f;
+    OnePoleLP toneLP;
     float bodyEnv = 0, body2Env = 0, noiseEnv = 0, pitchEnv = 0, snapEnv = 0;
     float bodyCoef = 0.999f, body2Coef = 0.999f, noiseCoef = 0.999f, pitchCoef = 0.99f, snapCoef = 0.99f;
     int   holdLeft = 0, age = 0;

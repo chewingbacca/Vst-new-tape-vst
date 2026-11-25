@@ -15,6 +15,8 @@ public:
     ~AutomataEditor() override;
 
     void paint (juce::Graphics&) override;
+    void visibilityChanged() override { if (isShowing()) grabKeyboardFocus(); }
+    void mouseDown (const juce::MouseEvent&) override { grabKeyboardFocus(); }
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
     bool keyStateChanged (bool isKeyDown) override;

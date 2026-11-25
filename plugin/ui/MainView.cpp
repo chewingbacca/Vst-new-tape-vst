@@ -8,6 +8,7 @@ namespace { constexpr int kGridH = 8 * 47, kStatusH = 20; }
 
 MainView::MainView (Ctx& c) : ctx (c)
 {
+    setMouseClickGrabsKeyboardFocus (false);   // let clicks fall through to the editor, which owns the shortcuts
     top = std::make_unique<TopBar> (ctx);
     grid = std::make_unique<StepGrid> (ctx);
     detail = std::make_unique<DetailPanel> (ctx, *grid);

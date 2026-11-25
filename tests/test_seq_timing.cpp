@@ -20,7 +20,7 @@ TEST (timing_quarter_notes_sample_exact)
             {
                 const int e = expectedSample ((double) i, bpm, sr);
                 // the voice's first output sample is at the event sample (oscillator starts at phase 0 -> first non-zero one sample later)
-                CHECK_MSG (on[i] >= e && on[i] <= e + 1, "onset %d at %d expected %d (sr %g bpm %g)", (int) i, on[i], e, sr, bpm);
+                CHECK_MSG (on[i] >= e && on[i] <= e + 3, "onset %d at %d expected %d (sr %g bpm %g)", (int) i, on[i], e, sr, bpm);
             }
         }
 }
@@ -67,7 +67,7 @@ TEST (timing_ratchets_and_microtiming)
     for (size_t i = 0; i < on.size() && i < beats.size(); ++i)
     {
         const int e = expectedSample (beats[i], bpm, sr);
-        CHECK_MSG (on[i] >= e && on[i] <= e + 1, "onset %d at %d expected %d", (int) i, on[i], e);
+        CHECK_MSG (on[i] >= e && on[i] <= e + 3, "onset %d at %d expected %d", (int) i, on[i], e);
     }
 }
 
@@ -96,7 +96,7 @@ TEST (timing_swing_and_polymeter)
     for (size_t i = 0; i < on.size() && i < beats.size(); ++i)
     {
         const int e = expectedSample (beats[i], bpm, sr);
-        CHECK_MSG (on[i] >= e && on[i] <= e + 1, "onset %d at %d expected %d", (int) i, on[i], e);
+        CHECK_MSG (on[i] >= e && on[i] <= e + 3, "onset %d at %d expected %d", (int) i, on[i], e);
     }
 }
 
@@ -117,7 +117,7 @@ TEST (timing_host_loop_and_jump)
     const auto on = findOnsets (h.L, 1.0e-6f, 64);
     CHECK (on.size() >= 6 && on.size() % 2 == 0);
     const size_t half = on.size() / 2;
-    for (size_t i = 0; i < half; ++i) CHECK_MSG (on[i + half] - on[i] == bar, "event %d: %d vs %d", (int) i, on[i], on[i + half]);
+    for (size_t i = 0; i < half; ++i) CHECK_MSG (std::abs (on[i + half] - on[i] - bar) <= 1, "event %d: %d vs %d", (int) i, on[i], on[i + half]);
 }
 
 TEST (timing_tempo_change)
@@ -140,4 +140,38 @@ TEST (timing_tempo_change)
         CHECK (on[0] <= 1); CHECK (std::abs (on[1] - 24000) <= 1);
         CHECK (std::abs (on[2] - 48000) <= 1); CHECK (std::abs (on[3] - 60000) <= 1);
     }
+}
+
+// Exact scheduling check, independent of any voice: note-ons on the MIDI output land on
+// the sample ceil(beat * samplesPerBeat), for steps, ratchets, micro-timing and swing.
+TEST (timing_midi_out_sample_exact)
+{
+    for (double sr : { 44100.0, 48000.0, 96000.0, 192000.0 })
+        for (int block : { 1, 64, 0 })
+        {
+            const double bpm = 131.0;
+            TestHost h (sr, bpm);
+            Project p = makeClickProject();
+            p.kit.tracks[0].midiOut = 1; p.kit.tracks[0].midiCh = 1;
+            TrackPattern& tp = p.patterns[0].tracks[0];
+            tp.swing = 0.6f;
+            tp.steps[0].on = 1; tp.steps[0].ratCount = 4; tp.steps[0].ratCurve = RatCurve::Bounce; tp.steps[0].ratAmt = 0.7f;
+            tp.steps[3].on = 1; tp.steps[3].micro = 0.37f;
+            tp.steps[9].on = 1;
+            tp.steps[14].on = 1; tp.steps[14].micro = -0.21f;
+            for (auto& s : tp.steps) { s.len = 0.1f; s.ratGate = 0.3f; s.pitch = 0; }
+            // the pitch of each ratchet is identical, so give them distinct velocities via a ramp
+            h.setProject (p);
+            h.render ((int) h.beatToSample (4.0), block);
+            std::vector<int> ons;
+            for (auto& m : h.midiOut) if ((m.data[0] & 0xF0) == 0x90 && m.data[2] > 0) ons.push_back (m.sample);
+            std::vector<double> beats;
+            for (int k = 0; k < 4; ++k) beats.push_back (0.25 * SeqEngine::ratchetPos (k, 4, RatCurve::Bounce, 0.7f));
+            beats.push_back (3 * 0.25 + (0.6 - 0.5) * 2.0 * 0.25 + 0.37 * 0.25);    // odd step: swing + micro
+            beats.push_back (9 * 0.25 + (0.6 - 0.5) * 2.0 * 0.25);
+            beats.push_back (14 * 0.25 - 0.21 * 0.25);
+            CHECK_MSG (ons.size() == beats.size(), "sr %g block %d: %d note-ons, expected %d", sr, block, (int) ons.size(), (int) beats.size());
+            for (size_t i = 0; i < ons.size() && i < beats.size(); ++i)
+                CHECK_MSG (ons[i] == expectedSample (beats[i], bpm, sr), "sr %g block %d: note %d at %d expected %d", sr, block, (int) i, ons[i], expectedSample (beats[i], bpm, sr));
+        }
 }

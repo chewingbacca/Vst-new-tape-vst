@@ -167,6 +167,8 @@ inline Stats measure (const std::vector<float>& x)
 }
 
 int runCli (int argc, char** argv);
+// Handles --factory <name|index> and --idea <style>:<seed>. Returns the preset's tempo (0 if neither flag), -1 on error.
+double loadPresetArgs (AutomataProcessor& proc, const juce::StringArray& args);
 // A small project that exercises most step features (used by the tools when nothing is loaded).
 void demoProject (atm::Project& p);
 

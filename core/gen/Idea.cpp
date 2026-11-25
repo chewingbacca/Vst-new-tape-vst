@@ -611,7 +611,8 @@ float generateIdea (Project& p, const IdeaOptions& o, SampleRefIO* samples)
         if (sl.role == Role::Kick && kickTrack < 0) kickTrack = t;
 
         // mix: levels and sends by role
-        static const float lvl[Role::count] = { 0.72f, 0.66f, 0.56f, 0.58f, 0.66f, 0.58f, 0.52f, 0.5f };
+        // normalised level (0.7071 = 0 dB); roughly -3 dB headroom per role so a full kit sits just under the limiter
+        static const float lvl[Role::count] = { 0.62f, 0.56f, 0.47f, 0.5f, 0.55f, 0.5f, 0.44f, 0.42f };
         ts.params[TP::Level] = lvl[sl.role] + r.bip() * 0.03f;
         const float panSpread = (sl.role == Role::Hat || sl.role == Role::Perc || sl.role == Role::Lead) ? r.bip() * 0.35f : 0.f;
         ts.params[TP::Pan] = 0.5f + panSpread * 0.5f;
@@ -681,11 +682,17 @@ float generateIdea (Project& p, const IdeaOptions& o, SampleRefIO* samples)
         }
         if (style == Style::ClicksCuts && (sl.role == Role::Hat || sl.role == Role::Perc) && ts.fxType[0] == Fx::None)
         {
-            setInsert (ts, 0, Fx::Stutter, { { "length", 5.f }, { "pitch", r.chance (0.5f) ? 0.f : -1.f }, { "decay", 0.2f } }, 1.f);
+            // repeat slots of 1/32 or 1/64 so a lock of one or two steps produces audible repeats
+            setInsert (ts, 0, Fx::Stutter, { { "length", r.chance (0.5f) ? 7.f : 9.f }, { "pitch", r.chance (0.5f) ? 0.f : -1.f }, { "decay", 0.2f } }, 1.f);
             for (int pi = 0; pi < 4; ++pi)
             {
                 TrackPattern& tp = p.patterns[pi].tracks[t];
-                for (int i = 0; i < tp.length; ++i) if (tp.steps[i].on && r.chance (0.12f)) tp.setLock (i, TP::FxA0, 1.f);
+                for (int i = 0; i < tp.length; ++i)
+                    if (tp.steps[i].on && r.chance (0.12f))
+                    {
+                        tp.setLock (i, TP::FxA0, 1.f);
+                        if (i + 1 < tp.length && r.chance (0.5f)) tp.setLock (i + 1, TP::FxA0, 1.f);
+                    }
             }
         }
         if (style == Style::DrillBass && sl.role == Role::Snare && ts.fxType[0] == Fx::None)

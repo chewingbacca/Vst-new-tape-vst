@@ -630,6 +630,23 @@ TEST (fx_reverb_rt60)
         Buf b = noise (burst, 0.25f, 61u);
         b.l.resize ((size_t) (burst + kSr * cs.decay * 1.5), 0.f); b.r.resize (b.l.size(), 0.f);
         rig.run (b, p);
+        // RT60 is quoted for the mid band (damping shortens the highs by design): measure through a
+        // band-pass around 1 kHz (RBJ, Q 1.4, applied forwards and backwards so no delay is added)
+        for (auto* ch : { &b.l, &b.r })
+        {
+            const double w = kTau * 1000.0 / kSr, al = std::sin (w) / (2.0 * 1.4);
+            const double b0 = al, b2 = -al, a0 = 1 + al, a1 = -2 * std::cos (w), a2 = 1 - al;
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+                std::reverse (ch->begin(), ch->end());
+                for (auto& v : *ch)
+                {
+                    const double y = (b0 * v + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+                    x2 = x1; x1 = v; y2 = y1; y1 = y; v = (float) y;
+                }
+            }
+        }
         const double r = rt60 (b, burst);
         if (std::getenv ("FX_VERBOSE")) std::printf ("    %s decay %g s -> RT60 %.2f s\n", name (cs.type), cs.decay, r);
         CHECK_MSG (std::fabs (r / cs.decay - 1.0) < 0.3, "%s decay %g s: measured RT60 %g s", name (cs.type), cs.decay, r);

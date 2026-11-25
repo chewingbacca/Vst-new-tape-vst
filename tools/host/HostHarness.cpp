@@ -1,5 +1,7 @@
 #include "HostHarness.h"
 #include "model/Json.h"
+#include "factory/Presets.h"
+#include "gen/Idea.h"
 #include <cstdio>
 
 namespace harness {
@@ -44,6 +46,34 @@ void demoProject (Project& p)
     std::snprintf (p.name, sizeof (p.name), "Demo");
 }
 
+double loadPresetArgs (AutomataProcessor& proc, const juce::StringArray& args)
+{
+    auto value = [&args] (const char* flag) { const int i = args.indexOf (flag); return (i >= 0 && i + 1 < args.size()) ? args[i + 1] : juce::String(); };
+    if (args.contains ("--factory"))
+    {
+        const juce::String f = value ("--factory");
+        int idx = f.containsOnly ("0123456789") && f.isNotEmpty() ? f.getIntValue() : -1;
+        for (int i = 0; i < numKitPresets() && idx < 0; ++i) if (f.equalsIgnoreCase (kitPresetInfo (i).name)) idx = i;
+        auto p = std::make_unique<Project>();
+        if (idx < 0 || ! buildKitPreset (idx, *p, &proc.session().samples())) { std::fprintf (stderr, "unknown preset %s\n", f.toRawUTF8()); return -1.0; }
+        proc.session().replaceProject (*p);
+        return kitPresetInfo (idx).bpm;
+    }
+    if (args.contains ("--idea"))
+    {
+        const auto parts = juce::StringArray::fromTokens (value ("--idea"), ":", "");
+        IdeaOptions io;
+        for (int s = 0; s < Style::count; ++s) if (parts[0].equalsIgnoreCase (styleKey (s))) io.style = s;
+        io.seed = (uint32_t) parts[1].getLargeIntValue();
+        styleTempoRange (io.style, io.tempoMin, io.tempoMax);
+        auto p = std::make_unique<Project>(); initProject (*p);
+        const float bpm = generateIdea (*p, io, &proc.session().samples());
+        proc.session().replaceProject (*p);
+        return bpm;
+    }
+    return 0.0;
+}
+
 int runCli (int argc, char** argv)
 {
     juce::StringArray args;
@@ -74,7 +104,17 @@ int runCli (int argc, char** argv)
     proc->setRateAndBufferSizeDetails (o.sr, o.block);
     proc->prepareToPlay (o.sr, o.block);
 
-    if (has ("--project"))
+    if (has ("--list-presets"))
+    {
+        for (int i = 0; i < numKitPresets(); ++i) std::printf ("%2d  %-18s %-16s %3.0f bpm\n", i, kitPresetInfo (i).name, styleName (kitPresetInfo (i).style), kitPresetInfo (i).bpm);
+        return 0;
+    }
+    bool bpmFromPreset = false;
+    const double presetBpm = loadPresetArgs (*proc, args);
+    if (presetBpm < 0.0) return 2;
+    if (presetBpm > 0.0 && ! has ("--bpm")) { o.bpm = presetBpm; bpmFromPreset = true; }
+    if (presetBpm > 0.0) {}
+    else if (has ("--project"))
     {
         if (! proc->loadProjectFile (juce::File::getCurrentWorkingDirectory().getChildFile (value ("--project"))))
         { std::fprintf (stderr, "cannot load project %s\n", value ("--project").toRawUTF8()); return 2; }
@@ -110,6 +150,8 @@ int runCli (int argc, char** argv)
         second->setStateInformation (mb.getData(), (int) mb.getSize());
         proc = std::move (second);
     }
+    juce::ignoreUnused (bpmFromPreset);
+    if (has ("--song")) { Song sg = proc->session().project().song; sg.songMode = 1; proc->session().setSong (sg); }
     if (has ("--save")) proc->saveProjectFile (juce::File::getCurrentWorkingDirectory().getChildFile (value ("--save")));
 
     const RenderResult r = render (*proc, o);

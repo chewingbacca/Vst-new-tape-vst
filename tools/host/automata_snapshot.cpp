@@ -27,13 +27,14 @@ int main (int argc, char** argv)
         const atm::Json j = atm::Json::parse (juce::File::getCurrentWorkingDirectory().getChildFile (value ("--json")).loadFileAsString().toStdString(), &ok);
         if (ok) proc->session().fromJson (j);
     }
+    const double presetBpm = harness::loadPresetArgs (*proc, args);
     if (args.contains ("--demo")) { auto p = std::make_unique<atm::Project>(); harness::demoProject (*p); proc->session().replaceProject (*p); }
     AutomataEditor::applySnapshotOptions (*proc, args);
 
     // run the engine for a moment so playheads, meters and modulation have something to show
     if (args.contains ("--play"))
     {
-        harness::RenderOptions o; o.bars = value ("--play", "1").getDoubleValue(); o.tailSeconds = 0.0; o.bpm = 120.0;
+        harness::RenderOptions o; o.bars = value ("--play", "1").getDoubleValue(); o.tailSeconds = 0.0; o.bpm = presetBpm > 0.0 ? presetBpm : 120.0;
         harness::render (*proc, o);
     }
 

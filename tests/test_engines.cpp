@@ -33,7 +33,8 @@ double maxStepOf (const std::vector<float>& x, size_t from, size_t to)
 
 double dbOf (double v) { return 20.0 * std::log10 (std::max (v, 1.0e-12)); }
 
-// A synthetic stereo drum loop for the sample engines (one second at 44.1 kHz).
+// A synthetic stereo loop for the sample engines (one second at 44.1 kHz): a sustained bass and
+// pad under a 16th-note drum pattern, peaking near -1 dBFS like a typical normalised break.
 const SampleData* testSample()
 {
     static std::unique_ptr<SampleData> s;
@@ -42,18 +43,29 @@ const SampleData* testSample()
         const int n = 44100;
         std::vector<float> l ((size_t) n, 0.f), r ((size_t) n, 0.f);
         Noise nz; nz.seed (17);
-        const int onsets[] = { 0, 5512, 11025, 16537, 22050, 27562, 33075, 38587 };
-        for (int k = 0; k < 8; ++k)
-            for (int i = onsets[k]; i < n; ++i)
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = i / 44100.0;
+            const float pad = (float) (0.12 * std::sin (kTau * 55.0 * t) + 0.06 * std::sin (kTau * 220.0 * t) + 0.05 * std::sin (kTau * 277.2 * t + 1.0));
+            l[(size_t) i] = pad; r[(size_t) i] = pad;
+        }
+        for (int k = 0; k < 16; ++k)
+        {
+            const int on = k * n / 16;
+            for (int i = on; i < n; ++i)
             {
-                const double t = (i - onsets[k]) / 44100.0;
+                const double t = (i - on) / 44100.0;
                 float v;
-                if (k % 4 == 0)      v = (float) (0.8 * std::sin (kTau * (50.0 * t + 2.5 * (1.0 - std::exp (-t * 35.0)))) * std::exp (-t * 10.0));
-                else if (k % 4 == 2) v = 0.5f * nz.next() * (float) std::exp (-t * 25.0);
-                else                 v = 0.2f * nz.next() * (float) std::exp (-t * 90.0);
+                if (k % 8 == 0 || k == 10) v = (float) (0.6 * std::sin (kTau * (50.0 * t + 2.5 * (1.0 - std::exp (-t * 35.0)))) * std::exp (-t * 10.0));
+                else if (k % 8 == 4)        v = 0.45f * nz.next() * (float) std::exp (-t * 25.0);
+                else                        v = 0.2f * nz.next() * (float) std::exp (-t * 90.0);
                 l[(size_t) i] += v;
                 r[(size_t) i] += k % 2 ? 0.7f * v : v;
             }
+        }
+        float pk = 0;
+        for (int i = 0; i < n; ++i) pk = std::max (pk, std::max (std::fabs (l[(size_t) i]), std::fabs (r[(size_t) i])));
+        for (int i = 0; i < n; ++i) { l[(size_t) i] *= 0.89f / pk; r[(size_t) i] *= 0.89f / pk; }
         const float* ptrs[2] = { l.data(), r.data() };
         s.reset (makeSampleData (ptrs, 2, n, 44100.0, "enginetest"));
     }
@@ -318,18 +330,21 @@ TEST (drum_models_peak_near_minus_3_and_stay_bounded)
 {
     for (int m = 0; m < 6; ++m)
     {
-        // defaults: -3 dBFS +-2 dB at note 60 (the drum track's base note), across seeds
-        double lo = 1e9, hi = -1e9;
-        for (uint32_t seed = 1; seed <= 8; ++seed)
+        // defaults: -3 dBFS +-2 dB at note 60 (the drum track's base note). Noise-based models peak
+        // differently with every seed, so the average must be on target and every seed close to it.
+        double lo = 1e9, hi = -1e9, sum = 0;
+        const int seeds = 16;
+        for (uint32_t seed = 1; seed <= (uint32_t) seeds; ++seed)
         {
             Rig rig (Engine::Drum, 48000.0);
             Params p (Engine::Drum); p.set ("model", (float) m);
             rig.on (p, 60.f, seed);
             Out o; rig.render (o, p, 24000, 16);
             const double db = dbOf (peakOf (o));
-            lo = std::min (lo, db); hi = std::max (hi, db);
+            lo = std::min (lo, db); hi = std::max (hi, db); sum += db;
         }
-        CHECK_MSG (lo > -5.0 && hi < -1.0, "drum model %d: default peaks %.1f .. %.1f dBFS", m, lo, hi);
+        const double mean = sum / seeds;
+        CHECK_MSG (mean > -4.5 && mean < -1.5 && lo > -5.5 && hi < -0.5, "drum model %d: default peaks %.1f .. %.1f dBFS, mean %.1f", m, lo, hi, mean);
 
         // extremes: below +6 dBFS
         Rng rng (5u + (uint32_t) m);
@@ -378,6 +393,8 @@ TEST (drum_velocity_brightens_and_every_parameter_acts)
             Params b = a;
             // fm ratio only matters with some fm
             if (std::strcmp (d[k].key, "fmratio") == 0) { a.set ("fm", 0.5f); b.set ("fm", 0.5f); }
+            // and the noise layer's colour / decay with an audible noise layer
+            if (std::strcmp (d[k].key, "ncolor") == 0 || std::strcmp (d[k].key, "ndecay") == 0) { a.set ("noise", 0.5f); b.set ("noise", 0.5f); }
             a.e[k] = 0.1f; b.e[k] = 0.9f;
             Out oa, ob;
             { Rig r (Engine::Drum, 48000.0); r.on (a, 60.f, 9); r.render (oa, a, 24000, 16); }
@@ -480,25 +497,41 @@ TEST (engines_fall_silent_and_finish_after_release)
 
 TEST (engine_retrigger_does_not_click)
 {
-    // Same note, same seed: every onset is identical, so anything larger than the steps of a single
-    // note comes from the hand-over (kill fade of the old voice + start of the new one).
+    // Mono-track hand-over: the new note kills the sounding voice (3 ms fade) and starts on the
+    // other one. Same note and seed every time, so the new voice is exactly the single note shifted
+    // in time; subtracting it leaves the old voice's exit. Its largest step must stay close to the
+    // largest step the old voice would have made anyway (plus the slope of the voice's own 3 ms
+    // exponential kill fade, about 5 % of the level per sample). A hard cut fails this.
     for (int engine : kAllEngines)
         for (const Params& p : variantsFor (engine))
             for (double period : { 0.03, 0.11 })
             {
                 const double sr = 48000.0;
-                const int per = (int) (period * sr);
+                const int per = (int) (period * sr), win = (int) (0.006 * sr);
                 Out single;
-                { VoiceRig vr (engine, sr); vr.setEngineParams (p); vr.start (50.f, 3, per / 2); vr.render (single, per * 3); }
-                const double ref = maxStepOf (single.l, 0, single.l.size());
+                { VoiceRig vr (engine, sr); vr.setEngineParams (p); vr.start (50.f, 3, per / 2); vr.render (single, per * 2); }
+                // notes start from silence
+                CHECK_MSG (std::fabs (single.l[0]) < 0.05f, "%s e0=%.2f: first sample %g", engineName (engine), p.e[0], single.l[0]);
+                double steady = maxStepOf (single.l, (size_t) (per - 8), (size_t) (per + win)), level = 0;
+                for (int i = per - 8; i < per + win; ++i) level = std::max (level, (double) std::fabs (single.l[(size_t) i]));
                 VoiceRig vr (engine, sr);
                 vr.setEngineParams (p);
                 Out o;
-                for (int k = 0; k < 8; ++k) { vr.start (50.f, 3, per / 2); vr.render (o, per); }
+                for (int k = 0; k < 6; ++k) { vr.start (50.f, 3, per / 2); vr.render (o, per); }
+                vr.render (o, win);
                 double worst = 0;
-                for (int k = 1; k < 8; ++k)
-                    worst = std::max (worst, maxStepOf (o.l, (size_t) (k * per - 8), (size_t) (k * per + 0.006 * sr)));
-                CHECK_MSG (worst <= 1.5 * ref + 2.0e-3, "%s period %g: retrigger step %.4f vs single-note step %.4f (model/variant e0=%.2f)",
-                           engineName (engine), period, worst, ref, p.e[0]);
+                for (int k = 1; k < 6; ++k)
+                {
+                    double prev = 0;
+                    for (int i = k * per - 8; i < k * per + win; ++i)
+                    {
+                        const int j = i - k * per;
+                        const double d = o.l[(size_t) i] - (j >= 0 ? single.l[(size_t) j] : 0.f);
+                        if (i > k * per - 8) worst = std::max (worst, std::fabs (d - prev));
+                        prev = d;
+                    }
+                }
+                CHECK_MSG (worst <= 1.5 * steady + 0.06 * level + 1.0e-3, "%s e0=%.2f period %g: hand-over step %.4f, steady step %.4f, level %.3f",
+                           engineName (engine), p.e[0], period, worst, steady, level);
             }
 }
