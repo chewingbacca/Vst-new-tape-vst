@@ -8,6 +8,9 @@
 #include "Generators.h"
 #include "../factory/Presets.h"
 #include "../seq/Scale.h"
+#include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
