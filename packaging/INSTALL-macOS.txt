@@ -1,0 +1,25 @@
+Automata 1.0 for macOS (Universal: Apple Silicon and Intel, macOS 11 or later)
+===============================================================================
+
+Install
+  VST3:        copy Automata.vst3      to  ~/Library/Audio/Plug-Ins/VST3/
+  Audio Unit:  copy Automata.component to  ~/Library/Audio/Plug-Ins/Components/
+  Standalone:  copy Automata.app       to  /Applications (or anywhere)
+
+  (~/Library is hidden: in Finder press Cmd+Shift+G and paste the path.)
+
+First launch: "Automata can't be opened / is damaged"
+  These builds are not notarised by Apple, so macOS quarantines files that came
+  from the internet. Remove the quarantine flag once, in Terminal:
+
+      xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Automata.vst3
+      xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Automata.component
+      xattr -dr com.apple.quarantine /Applications/Automata.app
+
+  Then restart your DAW (Logic: it rescans Audio Units on launch; if Automata
+  does not appear, open Logic > Settings > Plug-in Manager and rescan).
+
+Getting started
+  Press Play in the DAW (or Space in the plug-in), then NEW IDEA. Browse the 40
+  factory kits with the < and > buttons. The full guide is in README.md in the
+  source repository.

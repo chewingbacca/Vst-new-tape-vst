@@ -410,7 +410,7 @@ bool AutomataProcessor::loadState (const void* data, size_t size)
     std::string json;
     {
         juce::MemoryBlock gz;
-        in.readIntoMemoryBlock (gz, (ssize_t) gzSize);
+        in.readIntoMemoryBlock (gz, (juce::pointer_sized_int) gzSize);
         juce::MemoryInputStream gzIn (gz, false);
         juce::GZIPDecompressorInputStream z (gzIn);
         json.resize (jsonSize);
@@ -432,7 +432,7 @@ bool AutomataProcessor::loadState (const void* data, size_t size)
             const uint32_t blobSize = (uint32_t) in.readInt();
             if (blobSize > in.getNumBytesRemaining()) break;
             juce::MemoryBlock blob;
-            in.readIntoMemoryBlock (blob, (ssize_t) blobSize);
+            in.readIntoMemoryBlock (blob, (juce::pointer_sized_int) blobSize);
             juce::FlacAudioFormat flac;
             std::unique_ptr<juce::AudioFormatReader> reader (flac.createReaderFor (new juce::MemoryInputStream (blob, false), true));
             if (reader == nullptr || reader->lengthInSamples <= 0) continue;

@@ -1,0 +1,22 @@
+Automata 1.0 for Windows (64-bit)
+=================================
+
+VST3 plug-in
+  Copy the folder "Automata.vst3" to
+      C:\Program Files\Common Files\VST3\
+  (you need administrator rights for that folder), then rescan plug-ins in your DAW.
+  Automata appears as an instrument (Instrument | Drum | Sampler | Synth).
+
+Standalone
+  Run Automata.exe directly. Choose your audio and MIDI devices with the
+  "Options" button at the top-left of the window.
+
+Windows SmartScreen
+  The files are not code-signed, so Windows may warn that the app is from an
+  unknown publisher. Choose "More info" -> "Run anyway" for the standalone.
+  The VST3 loads in your DAW without that prompt.
+
+Getting started
+  Press Play in the DAW (or Space in the plug-in), then NEW IDEA. Browse the 40
+  factory kits with the < and > buttons. The full guide is in README.md in the
+  source repository.

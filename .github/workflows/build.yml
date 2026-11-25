@@ -1,0 +1,156 @@
+name: Build
+
+# Builds Automata on Windows, macOS (universal) and Linux, runs the tests, and uploads
+# the packaged plug-ins. Run it by hand with "release" ticked (or push a v* tag) to
+# publish the zips as a GitHub Release that anyone can download.
+
+on:
+  push:
+    branches-ignore: [ 'gh-pages' ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a GitHub Release with the build'
+        type: boolean
+        default: false
+      tag:
+        description: 'Release tag'
+        type: string
+        default: 'v1.0.0'
+
+concurrency:
+  group: build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Unit tests
+        run: build\tests\Release\automata_tests.exe
+      - name: Render tests
+        run: build\tools\Release\automata_render_tests.exe --quick
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          A=build/Automata_artefacts/Release
+          mkdir -p dist/Automata
+          cp -R "$A/VST3/Automata.vst3" dist/Automata/
+          cp "$A/Standalone/Automata.exe" dist/Automata/
+          cp packaging/INSTALL-Windows.txt dist/Automata/INSTALL.txt
+          cp assets/fonts/OFL.txt dist/Automata/FONT-LICENSE.txt
+          cd dist && 7z a -tzip ../Automata-Windows-x64.zip Automata > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Automata-Windows-x64
+          path: Automata-Windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ninja
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests
+        run: ./build/tests/automata_tests
+      - name: Render tests
+        run: ./build/tools/automata_render_tests --quick
+      - name: Package
+        run: |
+          set -e
+          A=build/Automata_artefacts/Release
+          mkdir -p dist/Automata
+          cp -R "$A/VST3/Automata.vst3" "$A/AU/Automata.component" "$A/Standalone/Automata.app" dist/Automata/
+          cp packaging/INSTALL-macOS.txt dist/Automata/INSTALL.txt
+          cp assets/fonts/OFL.txt dist/Automata/FONT-LICENSE.txt
+          for b in Automata.vst3 Automata.component Automata.app; do
+            codesign --force --deep --sign - "dist/Automata/$b"     # ad-hoc: required for Apple Silicon to load it
+            lipo -archs "dist/Automata/$b/Contents/MacOS/Automata"
+          done
+          ditto -c -k --keepParent dist/Automata Automata-macOS-Universal.zip
+      - name: Validate the Audio Unit (auval)
+        continue-on-error: true
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R dist/Automata/Automata.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -v aumu Atm8 Atma
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Automata-macOS-Universal
+          path: Automata-macOS-Universal.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxext-dev libxrender-dev libxcomposite-dev libxi-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev xvfb
+      - name: Build
+        run: ./build.sh
+      - name: Tests
+        run: |
+          ./build/tests/automata_tests
+          xvfb-run -a ./build/tools/automata_render_tests --quick
+      - name: Package
+        run: |
+          A=build/Automata_artefacts/Release
+          mkdir -p dist/Automata
+          cp -R "$A/VST3/Automata.vst3" "$A/Standalone/Automata" dist/Automata/
+          cp assets/fonts/OFL.txt dist/Automata/FONT-LICENSE.txt
+          tar -C dist -czf Automata-Linux-x64.tar.gz Automata
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Automata-Linux-x64
+          path: Automata-Linux-x64.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [ windows, macos, linux ]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Automata ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          body: |
+            Automata, a generative rhythm and sound-design instrument (VST3 / AU / Standalone).
+
+            * **Windows**: `Automata-Windows-x64.zip` (VST3 + standalone). See INSTALL.txt inside.
+            * **macOS** (Apple Silicon and Intel, macOS 11+): `Automata-macOS-Universal.zip` (VST3 + AU + standalone).
+              The builds are not notarised: run the `xattr` command from INSTALL.txt once after copying.
+            * **Linux**: `Automata-Linux-x64.tar.gz` (VST3 + standalone).
+
+            Built from ${{ github.sha }}.
+          files: artifacts/*
+          fail_on_unmatched_files: true
