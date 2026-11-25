@@ -244,6 +244,9 @@ struct Project
 static_assert (std::is_trivially_copyable_v<TrackPattern>);
 static_assert (std::is_trivially_copyable_v<TrackSound>);
 static_assert (std::is_trivially_copyable_v<Project>);
+static_assert (std::is_trivially_destructible_v<Project> && std::is_trivially_destructible_v<Kit>);
+// A Project is large (~0.8 MB). Never create one on the stack (thread stacks can be 512 KB on macOS, 1 MB on Windows):
+// allocate it on the heap (std::make_unique<Project>()).
 
 // Fill a TrackSound / Kit / Project with descriptor defaults.
 void initTrackSound (TrackSound& s, int engine);

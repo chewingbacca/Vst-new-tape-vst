@@ -1,4 +1,5 @@
 #include "Model.h"
+#include <new>
 #include <cstdio>
 
 namespace atm {
@@ -91,7 +92,8 @@ void initTrackSound (TrackSound& s, int engine)
 
 void initKit (Kit& k)
 {
-    k = Kit{};
+    // construct in place: never build these large structs as temporaries (thread stacks can be 512 KB)
+    k.~Kit(); new (&k) Kit();
     for (int t = 0; t < kTracks; ++t)
     {
         initTrackSound (k.tracks[t], Engine::Drum);
@@ -118,7 +120,7 @@ void setFxType (Kit& k, int slot, int fxType)
 
 void initProject (Project& p)
 {
-    p = Project{};
+    p.~Project(); new (&p) Project();      // in place: a Project is ~0.8 MB, too big for a temporary on small thread stacks
     initKit (p.kit);
     for (int i = 0; i < kPatterns; ++i)
     {

@@ -113,6 +113,8 @@ jobs:
         run: |
           ./build/tests/automata_tests
           xvfb-run -a ./build/tools/automata_render_tests --quick
+          # Windows main threads get 1 MB of stack and macOS secondary threads 512 KB: make sure we fit
+          (ulimit -s 512 && ./build/tests/automata_tests > /dev/null && echo "fits in a 512 KB stack")
       - name: Package
         run: |
           A=build/Automata_artefacts/Release

@@ -83,7 +83,7 @@ private:
 
     std::unique_ptr<atm::AudioEngine> eng;
     std::unique_ptr<atm::Session> sess;
-    juce::ThreadPool loaderPool { 1 };
+    juce::ThreadPool loaderPool { juce::ThreadPoolOptions{}.withThreadName ("Automata loader").withNumberOfThreads (1).withThreadStackSizeBytes (8 * 1024 * 1024) };
 
     std::vector<atm::MidiMsg> midiIn, midiOut;
     juce::AudioBuffer<float> scratch;

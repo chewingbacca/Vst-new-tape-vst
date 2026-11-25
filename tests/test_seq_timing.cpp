@@ -10,7 +10,7 @@ TEST (timing_quarter_notes_sample_exact)
         for (double bpm : { 87.0, 120.0, 171.3 })
         {
             TestHost h (sr, bpm);
-            Project p = makeClickProject();
+            auto pp = makeClickProject(); Project& p = *pp;
             for (int i = 0; i < 16; i += 4) p.patterns[0].tracks[0].steps[i].on = 1;
             h.setProject (p);
             h.render ((int) h.beatToSample (8.0), 0);
@@ -27,7 +27,7 @@ TEST (timing_quarter_notes_sample_exact)
 
 TEST (timing_block_size_independent)
 {
-    Project p = makeClickProject();
+    auto pp = makeClickProject(); Project& p = *pp;
     TrackPattern& tp = p.patterns[0].tracks[0];
     for (int i = 0; i < 16; i += 2) tp.steps[i].on = 1;
     tp.steps[6].ratCount = 4; tp.steps[6].ratCurve = RatCurve::Accel;
@@ -51,7 +51,7 @@ TEST (timing_ratchets_and_microtiming)
 {
     const double sr = 48000.0, bpm = 120.0;
     TestHost h (sr, bpm);
-    Project p = makeClickProject();
+    auto pp = makeClickProject(); Project& p = *pp;
     TrackPattern& tp = p.patterns[0].tracks[0];
     tp.steps[0].on = 1; tp.steps[0].ratCount = 4;                       // even: 0, 1/16, 2/16, 3/16 beats
     tp.steps[4].on = 1; tp.steps[4].micro = 0.25f;                      // +1/4 step late
@@ -75,7 +75,7 @@ TEST (timing_swing_and_polymeter)
 {
     const double sr = 48000.0, bpm = 100.0;
     TestHost h (sr, bpm);
-    Project p = makeClickProject();
+    auto pp = makeClickProject(); Project& p = *pp;
     TrackPattern& tp = p.patterns[0].tracks[0];
     tp.length = 3; tp.freeRun = 1; tp.swing = 0.66f;                    // 3-step loop against 4/4, heavy swing
     tp.steps[0].on = 1; tp.steps[1].on = 1;
@@ -105,7 +105,7 @@ TEST (timing_host_loop_and_jump)
     // Play bar 1, jump back to 0 (a host loop), play again: the same events must appear both times.
     const double sr = 48000.0, bpm = 140.0;
     TestHost h (sr, bpm);
-    Project p = makeClickProject();
+    auto pp = makeClickProject(); Project& p = *pp;
     TrackPattern& tp = p.patterns[0].tracks[0];
     for (int i : { 0, 3, 6, 10, 13 }) tp.steps[i].on = 1;
     tp.steps[3].prob = 50; tp.steps[10].prob = 50;       // probability is tied to position, so it must repeat too
@@ -125,7 +125,7 @@ TEST (timing_tempo_change)
     // Tempo doubles at beat 2: events still fall on their beats.
     const double sr = 48000.0;
     TestHost h (sr, 120.0);
-    Project p = makeClickProject();
+    auto pp = makeClickProject(); Project& p = *pp;
     for (int i = 0; i < 16; i += 4) p.patterns[0].tracks[0].steps[i].on = 1;
     h.setProject (p);
     const int first = (int) h.beatToSample (2.0);       // 48000 samples
@@ -151,7 +151,7 @@ TEST (timing_midi_out_sample_exact)
         {
             const double bpm = 131.0;
             TestHost h (sr, bpm);
-            Project p = makeClickProject();
+            auto pp = makeClickProject(); Project& p = *pp;
             p.kit.tracks[0].midiOut = 1; p.kit.tracks[0].midiCh = 1;
             TrackPattern& tp = p.patterns[0].tracks[0];
             tp.swing = 0.6f;

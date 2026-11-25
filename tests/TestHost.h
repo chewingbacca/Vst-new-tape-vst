@@ -2,6 +2,7 @@
 #pragma once
 #include "engine/AudioEngine.h"
 #include "engine/OfflineRender.h"
+#include <memory>
 #include <vector>
 
 struct TestHost
@@ -80,9 +81,11 @@ struct TestHost
 };
 
 // A project with one short, clicky kick on track 0 and nothing else: onsets are easy to detect.
-inline atm::Project makeClickProject()
+inline std::unique_ptr<atm::Project> makeClickProject()
 {
-    atm::Project p; atm::initProject (p);
+    auto pp = std::make_unique<atm::Project>();
+    atm::Project& p = *pp;
+    atm::initProject (p);
     atm::TrackSound& ts = p.kit.tracks[0];
     atm::setTrackParamText (ts, "model", "kick");
     atm::setTrackParamPhys (ts, "decay", 0.01f);
@@ -95,7 +98,7 @@ inline atm::Project makeClickProject()
     atm::setTrackParamPhys (ts, "ampr", 0.002f);
     atm::setTrackParamPhys (ts, "ampvel", 0.f);
     p.kit.gparams[atm::GP::LimitOn] = 0.f;
-    return p;
+    return pp;
 }
 
 // Indices where the signal rises above `thresh` after at least `quiet` samples below it.
