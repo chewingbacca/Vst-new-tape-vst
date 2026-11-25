@@ -68,6 +68,11 @@ if(AUTOMATA_BUILD_PLUGIN)
     NEEDS_WEB_BROWSER FALSE
     NEEDS_CURL FALSE)
 
+  juce_add_binary_data(AutomataAssets
+    NAMESPACE AutomataAssets
+    SOURCES assets/fonts/JetBrainsMono-Regular.ttf assets/fonts/JetBrainsMono-Bold.ttf)
+  set_target_properties(AutomataAssets PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
   file(GLOB_RECURSE AUTOMATA_PLUGIN_SRC CONFIGURE_DEPENDS plugin/*.cpp)
   target_sources(Automata PRIVATE ${AUTOMATA_PLUGIN_SRC})
   target_include_directories(Automata PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/plugin)
@@ -88,6 +93,7 @@ if(AUTOMATA_BUILD_PLUGIN)
       juce::juce_gui_extra
     PUBLIC
       automata_core
+      AutomataAssets
       juce::juce_recommended_config_flags)
 endif()
 

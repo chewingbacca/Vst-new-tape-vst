@@ -48,6 +48,8 @@ public:
     void setTuning (const Tuning& t);
     void setSong (const Song& s);
     void setTrackSample (int track, int sampleId);
+    // Put a voice preset on a track (sound + its modulation routings), as one undo step.
+    void applyVoice (int track, const VoicePresetData& v);
     void setProjectMeta (const char* name, uint32_t seed, int style, int midiPatternCh);
     void replaceProject (const Project& p);             // whole project (preset, New Idea)
     void replacePattern (int pattern, const Pattern& p);

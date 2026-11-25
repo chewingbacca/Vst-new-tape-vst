@@ -1,4 +1,5 @@
 #include "Session.h"
+#include "../factory/Presets.h"
 #include <algorithm>
 
 namespace atm {
@@ -487,6 +488,20 @@ void Session::setTrackSample (int t, int sampleId)
     TrackSound ts = proj.kit.tracks[t];
     ts.sampleId = sampleId;
     setTrackSound (t, ts);
+}
+
+void Session::applyVoice (int t, const VoicePresetData& v)
+{
+    if (t < 0 || t >= kTracks) return;
+    Transaction tx (*this, "Load voice preset");
+    touch (Obj::TrackSound, t);
+    touch (Obj::KitGlobals);
+    const TrackSound prev = proj.kit.tracks[t];
+    const std::vector<uint8_t> prevGlobals = capture (Obj::KitGlobals, 0, 0);
+    applyVoicePreset (proj, t, v);
+    pushTrackSound (t, &prev);
+    pushKitGlobals (reinterpret_cast<const KitGlobals*> (prevGlobals.data()));
+    ++rev;
 }
 
 void Session::setProjectMeta (const char* name, uint32_t seed, int style, int midiPatternCh)

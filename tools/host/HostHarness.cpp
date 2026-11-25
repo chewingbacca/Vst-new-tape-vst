@@ -6,7 +6,7 @@ namespace harness {
 
 using namespace atm;
 
-static void demoProject (Project& p)
+void demoProject (Project& p)
 {
     initProject (p);
     TrackPattern& k = p.patterns[0].tracks[0];
@@ -17,6 +17,30 @@ static void demoProject (Project& p)
     setTrackParamText (p.kit.tracks[2], "model", "hat"); setTrackParamText (p.kit.tracks[2], "decay", "0.05");
     TrackPattern& h = p.patterns[0].tracks[2];
     for (int i = 0; i < 16; ++i) { h.steps[i].on = 1; h.steps[i].vel = (uint8_t) (i % 4 == 2 ? 112 : 64); }
+    // a melodic line with slides, conditions, probability and a lock lane so every cell feature shows up
+    initTrackSound (p.kit.tracks[3], Engine::Synth); p.kit.tracks[3].role = Role::Bass; p.kit.tracks[3].scaleOn = 1; p.kit.tracks[3].baseNote = 36;
+    std::snprintf (p.kit.tracks[3].name, sizeof (p.kit.tracks[3].name), "Acid Line");
+    setTrackParamText (p.kit.tracks[3], "flttype", "Ladder"); setTrackParamText (p.kit.tracks[3], "cutoff", "600");
+    setTrackParamText (p.kit.tracks[3], "res", "0.7"); setTrackParamText (p.kit.tracks[3], "fltenv", "0.5");
+    TrackPattern& a = p.patterns[0].tracks[3];
+    a.length = 24;
+    static const int pitches[24] = { 0, 0, 7, 0, 3, 0, 0, 12, 0, 5, 0, 0, 7, 3, 0, 0, 10, 0, 0, 7, 0, 3, 0, 12 };
+    for (int i = 0; i < 24; ++i)
+    {
+        Step& st = a.steps[i];
+        st.on = (i % 3) != 1; st.pitch = (int8_t) pitches[i]; st.vel = (uint8_t) (i % 4 == 0 ? 120 : 84);
+        if (i == 7 || i == 16) st.slide = 1;
+        if (i == 9) st.prob = 50;
+        if (i == 13) st.cond = condMakeAB (1, 2);
+        if (i == 20) { st.ratCount = 4; st.ratCurve = RatCurve::Bounce; st.ratPitch = 12.f; }
+        if (i == 5) st.micro = 0.3f;
+        st.len = i % 5 == 0 ? 2.f : 0.6f;
+    }
+    for (int i : { 2, 7, 12, 19 }) a.setLock (i, TP::FltCut, 0.5f + 0.02f * (float) i);
+    a.setLock (12, TP::FltRes, 0.9f);
+    TrackPattern& hh = p.patterns[0].tracks[2];
+    hh.steps[7].ratCount = 3; hh.steps[11].ratCount = 6; hh.steps[11].ratCurve = RatCurve::Accel; hh.steps[11].ratVel = -0.7f;
+    hh.steps[13].prob = 60; hh.steps[5].micro = -0.2f;
     std::snprintf (p.name, sizeof (p.name), "Demo");
 }
 

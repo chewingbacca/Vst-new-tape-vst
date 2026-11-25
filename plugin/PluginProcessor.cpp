@@ -156,6 +156,12 @@ void AutomataProcessor::setTrackMute (int track, bool mute)
     sess->setTrackFlags (track, mute, sess->project().kit.tracks[track].solo != 0);
 }
 
+void AutomataProcessor::setEvolve (bool on)
+{
+    if (auto* p = findHostParam (HostParam::Evolve, 0, 0)) p->setValueNotifyingHost (on ? 1.f : 0.f);
+    sess->setEvolve (on);
+}
+
 void AutomataProcessor::beginGesture (int track, int param)
 {
     if (auto* p = track < 0 ? findHostParam (HostParam::Global, param, 0) : findHostParam (HostParam::Track, track, param)) p->beginChangeGesture();

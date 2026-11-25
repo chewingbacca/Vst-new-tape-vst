@@ -42,6 +42,7 @@ public:
     void setGlobalParam (int gp, float norm);
     void setTrackParam (int track, int tp, float norm);
     void setTrackMute (int track, bool mute);
+    void setEvolve (bool on);
     void beginGesture (int trackOrMinus1, int param);
     void endGesture (int trackOrMinus1, int param);
     bool undo();
