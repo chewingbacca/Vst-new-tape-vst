@@ -11,6 +11,21 @@ New Idea, Evolve) is a pure function of seeds and song position. The same projec
 plays back identically every time, at any buffer size, after a host loop or a
 jump. A happy accident can be kept, locked and refined.
 
+## Download
+
+Ready-made builds are on the [Releases page](https://github.com/chewingbacca/Vst-new-tape-vst/releases/latest):
+
+| | File | Contains |
+|---|---|---|
+| Windows 10/11 (64-bit) | `Automata-Windows-x64.zip` | VST3, standalone `.exe` |
+| macOS 11+ (Apple Silicon and Intel) | `Automata-macOS-Universal.zip` | VST3, Audio Unit, standalone `.app` |
+| Linux (x64) | `Automata-Linux-x64.tar.gz` | VST3, standalone |
+
+Each zip has an `INSTALL.txt`. The builds are not code-signed: on macOS run the one-line
+`xattr` command from `INSTALL.txt` once after copying, on Windows SmartScreen may ask you to
+confirm the standalone app. New releases are built by GitHub Actions (`.github/workflows/build.yml`;
+run it with "release" ticked).
+
 ![Automata](docs/screenshot.png)
 
 The STEPS page in lock mode (an acid line with its cutoff lock lane):
