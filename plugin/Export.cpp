@@ -81,7 +81,7 @@ juce::File renderPatternAudio (AutomataProcessor& proc, int pattern, int soloTra
         o.bars = lb < 4 ? 4.0 : (double) lb;
         o.tailSeconds = 4.0; o.soloTrack = soloTrack;
         renderOffline (*p, samples, o, l, r);
-        name = safeName (p->name) + "_" + p->patterns[pattern].name + (soloTrack >= 0 ? "_T" + juce::String (soloTrack + 1) : juce::String())
+        name = safeName (p->name) + "_" + juce::String (p->patterns[pattern].name) + (soloTrack >= 0 ? "_T" + juce::String (soloTrack + 1) : juce::String())
              + "_" + juce::String ((int) std::lround (o.bpm)) + "bpm.wav";
     }
     const juce::File f = exportDir().getChildFile (name);
