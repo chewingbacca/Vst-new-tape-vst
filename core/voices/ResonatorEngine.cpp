@@ -422,7 +422,7 @@ private:
             // (a pulse wider than the pickup spacing partly cancels: compensate, within limits)
             const float per = fsr / fPitch;
             const float overlap = std::min (1.f, std::min (beta, 1.f - beta) * per / width);
-            strikeGain = (exciter == NoiseBurst ? 0.55f : 0.7f / std::sqrt (std::max (overlap, 0.1f))) * areaNorm;
+            strikeGain = (exciter == NoiseBurst ? 0.4f : 0.7f / std::sqrt (std::max (overlap, 0.1f))) * areaNorm;
         }
         else
         {
@@ -435,9 +435,11 @@ private:
                 const float a = w * strikeSpectrum (modeHz[k] * bend);
                 sum += a; sq += a * a; flat += w;
             }
-            float est = (exciter == NoiseBurst) ? 1.6f * std::sqrt (sq) : 0.75f * sum + 0.25f * std::sqrt (sq);
+            float est = (exciter == NoiseBurst) ? 2.3f * std::sqrt (sq) : 0.75f * sum + 0.25f * std::sqrt (sq);
             est = std::max (est, 0.12f * flat);                 // never boost a badly matched strike by more than ~18 dB
-            strikeGain = 0.7f * areaNorm / std::max (est, 0.02f);
+            // measured trims: the dense, slowly beating bell and membrane spectra peak lower than the estimate
+            const float trim = (exciter != NoiseBurst && (model == Bell || model == Membrane)) ? 1.5f : 1.f;
+            strikeGain = 0.7f * trim * areaNorm / std::max (est, 0.02f);
         }
     }
 

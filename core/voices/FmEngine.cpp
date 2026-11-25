@@ -117,7 +117,7 @@ public:
             for (int k = 0; k < kOps; ++k) { ph[k] = 0; env[k] = 1.f; }
             fb1 = fb2 = 0.f;
             attack = 0.f; pe = 1.f;
-            gridLeft = 0; snap = true; sinceOn = 0;
+            gridLeft = 0; snap = true; sinceOn = 0; done = false;
             dn.reset(); dc.reset();
             active = true;
         }
