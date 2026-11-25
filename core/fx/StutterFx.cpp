@@ -189,11 +189,12 @@ private:
         ++rep;
         const int64_t ib = (int64_t) std::llround (nextB);             // slot start, in samples since the engage
         const double recorded = (double) std::min (ib, maxRec - 8);    // what will be on tape when the slot starts
-        const double len = std::min (lenSamples(), recorded);
+        const double grid = lenSamples();                               // slot length on the tempo grid
+        const double len = std::min (grid, recorded);                   // readable slice (never more than is on tape)
         shrinkPow = std::max (shrinkPow * shrink, 1.0e-9);
         decayGain *= 1.f - decay;
         const double rate = rateFor (rep);
-        const double slot = std::max (minSlot, len * shrinkPow);
+        const double slot = std::max (minSlot, grid * shrinkPow);
         const double dur  = sounding (slot, len, rate);
 
         Grain& g = alloc();
@@ -210,7 +211,7 @@ private:
         nextB += slot;
         const int64_t ibNext = (int64_t) std::llround (nextB);
         const int slotLen = (int) (ibNext - ib);
-        const int fb = boundaryFade (dur, sounding (std::max (minSlot, len * shrinkPow * shrink), len, rateFor (rep + 1)));
+        const int fb = boundaryFade (dur, sounding (std::max (minSlot, grid * shrinkPow * shrink), len, rateFor (rep + 1)));
         if (dur >= (double) (slotLen - fb)) { g.outStart = slotLen - fb; g.fadeOut = fb; }      // plays into the next boundary: crossfade
         else
         {

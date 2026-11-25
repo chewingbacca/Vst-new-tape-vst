@@ -192,7 +192,7 @@ void StepGrid::paintCell (juce::Graphics& g, int t, int i, juce::Rectangle<float
     const TrackPattern& tp = ctx.tp (t);
     auto r = cell.reduced (1.f, 0.f);
     const bool beat = (i % 4) == 0;
-    g.setColour (beat ? col::panelHi().brighter (0.05f) : col::well().brighter (0.02f));
+    g.setColour (beat ? col::panelHi().brighter (0.07f) : col::panelHi().darker (0.12f));
     g.fillRoundedRectangle (r, 2.f);
     if ((i % 16) == 0 && i > 0) { g.setColour (col::lineHi()); g.fillRect (cell.getX() - 0.5f, cell.getY(), 1.f, cell.getHeight()); }
 

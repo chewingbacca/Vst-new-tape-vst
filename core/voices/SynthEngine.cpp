@@ -444,7 +444,7 @@ public:
     {
         const ParamDesc* d = kSynthParams;
         noteCur = note;
-        mode = clamp (d[Mode].toIndex (e[Mode]), 0, kWtSets);
+        modeParam = clamp (d[Mode].toIndex (e[Mode]), 0, kWtSets);      // takes effect at the next grid update
         uniIdx = clamp (d[Unison].toIndex (e[Unison]), 0, 4);
         wave[0] = clamp01 (e[Wave1]); wave[1] = clamp01 (e[Wave2]);
         pw = clamp01 (e[PW]);
@@ -509,7 +509,7 @@ private:
         float ph1 = 0.f, ph2 = 0.f, phM = 0.f, modPrev = 0.f;
         Ramp  inc1, inc2;                       // osc 1; osc 2 base (= sync master)
         Ramp  g[4];                             // osc1 L, osc1 R, osc2 L, osc2 R
-        Ramp  w[2], rw[2], rf[2];               // trapezoid of osc 1 / osc 2
+        Ramp  w[2];                             // trapezoid corner of osc 1 / osc 2 (slopes follow from it)
         float dPh[3] = {}, dInc[3] = {};        // drift LFOs (phase 0..1, increment per grid step)
     };
 
@@ -527,8 +527,10 @@ private:
         float ph1 = u.ph1, ph2 = u.ph2, phM = u.phM, modPrev = u.modPrev;
         float inc1 = u.inc1.v, inc2 = u.inc2.v;
         float g1L = u.g[0].v, g1R = u.g[1].v, g2L = u.g[2].v, g2R = u.g[3].v;
-        Shape s1 { u.w[0].v, u.rw[0].v, u.rf[0].v, aR[0].v, dR.v };
-        Shape s2 { u.w[1].v, u.rw[1].v, u.rf[1].v, aR[1].v, dR.v };
+        // The slopes are derived from the ramped corner position on every sample: ramping 1/w and
+        // 1/(1-w) separately gives inconsistent shapes (huge values) while a pitch jump moves w.
+        Shape s1 { u.w[0].v, 1.f / u.w[0].v, 1.f / (1.f - u.w[0].v), aR[0].v, dR.v };
+        Shape s2 { u.w[1].v, 1.f / u.w[1].v, 1.f / (1.f - u.w[1].v), aR[1].v, dR.v };
         float pos1 = posR[0].v, pos2 = posR[1].v, warp = warpR.v, fmI = fmR.v, syncMul = syncR.v, sg1 = sgR[0].v, sg2 = sgR[1].v;
 
         auto wtWarped = [tab, warpOn] (const WtView& vw, float ph, float pos, float b) -> float
@@ -629,8 +631,12 @@ private:
             // ---- ramps
             inc1 += u.inc1.step; inc2 += u.inc2.step;
             g1L += u.g[0].step; g1R += u.g[1].step; g2L += u.g[2].step; g2R += u.g[3].step;
-            s1.w += u.w[0].step; s1.rw += u.rw[0].step; s1.rf += u.rf[0].step;
-            s2.w += u.w[1].step; s2.rw += u.rw[1].step; s2.rf += u.rf[1].step;
+            if (! wt)
+            {
+                s1.w += u.w[0].step; s1.rw = 1.f / s1.w; s1.rf = 1.f / (1.f - s1.w);
+                s2.w += u.w[1].step; s2.rw = 1.f / s2.w; s2.rf = 1.f / (1.f - s2.w);
+            }
+            else { s1.w += u.w[0].step; s2.w += u.w[1].step; }
             s1.a += aR[0].step; s2.a += aR[1].step; s1.d += dR.step; s2.d = s1.d;
             pos1 += posR[0].step; pos2 += posR[1].step; warp += warpR.step; fmI += fmR.step; syncMul += syncR.step;
             sg1 += sgR[0].step; sg2 += sgR[1].step;
@@ -639,8 +645,7 @@ private:
         u.ph1 = ph1; u.ph2 = ph2; u.phM = phM; u.modPrev = (fmR.next == 0.f && std::fabs (modPrev) < 1.0e-7f) ? 0.f : modPrev;
         u.inc1.v = inc1; u.inc2.v = inc2;
         u.g[0].v = g1L; u.g[1].v = g1R; u.g[2].v = g2L; u.g[3].v = g2R;
-        u.w[0].v = s1.w; u.rw[0].v = s1.rw; u.rf[0].v = s1.rf;
-        u.w[1].v = s2.w; u.rw[1].v = s2.rw; u.rf[1].v = s2.rf;
+        u.w[0].v = s1.w; u.w[1].v = s2.w;
     }
 
     void renderSubNoise (int seg)
@@ -799,6 +804,9 @@ private:
     {
         Targets t;
         const float c = smoothCoef, ik = invGrid;
+        // The oscillator mode is latched here, together with the wavetable views it needs: a mode
+        // switch arriving mid-interval must not reach the per-sample code before its views exist.
+        mode = modeParam;
         if (snap)
         {
             // first sample of a note: everything starts on its target
@@ -813,7 +821,7 @@ private:
                 for (int o = 0; o < 2; ++o)
                 {
                     const float w = std::min (shapeW[o], 1.f - t.fall[v][o]);
-                    u.w[o].snapTo (w); u.rw[o].snapTo (1.f / w); u.rf[o].snapTo (1.f / (1.f - w));
+                    u.w[o].snapTo (w);
                 }
             }
             shapeSm[0] = shapeW[0]; shapeSm[1] = shapeW[1];
@@ -826,7 +834,7 @@ private:
             {
                 u.inc1.land(); u.inc2.land();
                 for (auto& r : u.g) r.land();
-                for (int o = 0; o < 2; ++o) { u.w[o].land(); u.rw[o].land(); u.rf[o].land(); }
+                for (int o = 0; o < 2; ++o) u.w[o].land();
             }
         }
 
@@ -853,7 +861,7 @@ private:
             {
                 // the shape glides like every other parameter; the flyback limit follows the pitch directly
                 const float w = std::min (shapeSm[o], 1.f - t.fall[v][o]);
-                u.w[o].aim (w, ik); u.rw[o].aim (1.f / w, ik); u.rf[o].aim (1.f / (1.f - w), ik);
+                u.w[o].aim (w, ik);
             }
         }
     }
@@ -868,7 +876,7 @@ private:
     // parameters (refreshed in control())
     float lastE[kEngineParams];
     float noteCur = 60.f;
-    int   mode = 0, uniIdx = 0;
+    int   mode = 0, modeParam = 0, uniIdx = 0;
     float wave[2] = { 0.4f, 0.4f }, pw = 0.5f, ratio2 = 1.f, syncRatio = 1.f, mix = 0.f, subLv = 0.f, noiseLv = 0.f;
     float fmAmt = 0.f, uniDet = 0.f, drift = 0.f, width = 0.5f;
 

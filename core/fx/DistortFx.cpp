@@ -2,6 +2,7 @@
 //
 //   in -> low cut (12 dB/oct HP) -> drive -> + bias -> 2x oversampled shaper -> - shaper(bias)
 //      -> DC blocker -> tilt EQ (first-order, pivot 700 Hz, +-9 dB) -> compensation * output
+//      -> safety soft limit (transparent below +-2, ceiling +-4)
 //
 // Shapers (u = driven input):
 //   Tanh      soft clip
@@ -90,10 +91,18 @@ public:
                 float y = s.os.down (shape (t, a + bias) - rest, shape (t, b + bias) - rest);
                 y = s.dc.process (y);
                 const float lo = s.tilt.process (y);
-                io[c][i] = (low * lo + high * (y - lo)) * gain;
+                y = (low * lo + high * (y - lo)) * gain;
+                // safety stage for extreme output / tone settings: clean below +-2, never above +-4
+                const float m = std::fabs (y);
+                if (m > 2.f) y = std::copysign (2.f + 2.f * fastTanh (0.5f * (m - 2.f)), y);
+                io[c][i] = y;
             }
         }
-        for (auto& c : ch) { c.hp.sanitise(); c.tilt.z = undenorm (c.tilt.z); }
+        for (auto& c : ch)
+        {
+            c.hp.sanitise(); c.hp.ic1 = undenorm (c.hp.ic1); c.hp.ic2 = undenorm (c.hp.ic2);
+            c.tilt.z = undenorm (c.tilt.z);
+        }
     }
 
 private:

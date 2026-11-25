@@ -142,10 +142,10 @@ private:
     {
         if (driven)
         {
-            const float inv = 1.f / mag, g = s * inv;
+            const float inv = 1.f / mag;
             const float a = xr * inv, b = xi * inv;
             qr = a * jr - b * ji; qi = a * ji + b * jr;
-            ur = xr * g; ui = xi * g;
+            ur = xr; ui = xi;
         }
         else if (s > 0.f)
         {
@@ -188,6 +188,10 @@ private:
         const float tauA = 0.12f * blur * blur, tauR = 8.f * blur * blur * blur;
         const float aAtt = tauA > 1.0e-5f ? 1.f - std::exp (-hopTime / tauA) : 1.f;
         const float aRel = tauR > 1.0e-5f ? 1.f - std::exp (-hopTime / tauR) : 1.f;
+        // The held magnitude is a peak follower, so it overstates the level it smears; the tail (and
+        // the frozen spectrum) is heard at tailG times the held value. 1 at blur 0 (an exact freeze of
+        // the last frame), -6 dB at the default 0.5.
+        const float tailG = 1.f / (1.f + 2.f * blur);
 
         // ---- analysis -------------------------------------------------------------------------
         const int m = N - 1;
@@ -241,10 +245,10 @@ private:
             {
                 float s = SL[k]; float d = ml - s;
                 s += (d > 0.f ? aAtt : aRel) * d; if (s < 1.0e-10f && d < 0.f) s = 0.f;
-                SL[k] = s; dL = ml > kTiny && ml >= 0.5f * s;
+                SL[k] = s; dL = ml > kTiny && ml >= tailG * s;
                 s = SR[k]; d = mrr - s;
                 s += (d > 0.f ? aAtt : aRel) * d; if (s < 1.0e-10f && d < 0.f) s = 0.f;
-                SR[k] = s; dR = mrr > kTiny && mrr >= 0.5f * s;
+                SR[k] = s; dR = mrr > kTiny && mrr >= tailG * s;
             }
             const float sl = SL[k], sr_ = SR[k];
             held = held || sl > 0.f || sr_ > 0.f;
@@ -280,8 +284,8 @@ private:
                 }
             }
             const float rr = RR[k], ri = RI[k];
-            holdBin (frozen, dL, ml, sl, XLr[k], XLi[k], QLr[k], QLi[k], dL ? lr : rr, dL ? li : ri, ULr[k], ULi[k]);
-            holdBin (frozen, dR, mrr, sr_, XRr[k], XRi[k], QRr[k], QRi[k], dR ? lr : rr, dR ? li : ri, URr[k], URi[k]);
+            holdBin (frozen, dL, ml, tailG * sl, XLr[k], XLi[k], QLr[k], QLi[k], dL ? lr : rr, dL ? li : ri, ULr[k], ULi[k]);
+            holdBin (frozen, dR, mrr, tailG * sr_, XRr[k], XRi[k], QRr[k], QRi[k], dR ? lr : rr, dR ? li : ri, URr[k], URi[k]);
         }
         anyHeld = held;
 

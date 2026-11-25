@@ -447,6 +447,57 @@ void Picker::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDeta
     sync();
 }
 
+// ============================================================================ ValueKnob
+void ValueKnob::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds();
+    auto labelArea = r.removeFromBottom (12);
+    const float dia = (float) juce::jmin (r.getWidth(), r.getHeight()) - 6.f;
+    const juce::Point<float> c ((float) r.getCentreX(), (float) r.getCentreY() + 1.f);
+    const float rad = dia * 0.5f;
+    const float v = get ? get() : 0.f;
+    g.setColour (col::well());
+    g.fillEllipse (c.x - rad + 3.f, c.y - rad + 3.f, dia - 6.f, dia - 6.f);
+    strokeArc (g, c, rad - 1.f, kArcStart, kArcEnd, 2.6f, col::line().brighter (over ? 0.25f : 0.f));
+    const float a = angleFor (v);
+    strokeArc (g, c, rad - 1.f, bipolar ? 0.f : kArcStart, a, 2.6f, colour);
+    g.setColour (col::text());
+    g.drawLine (c.x + std::sin (a) * rad * 0.28f, c.y - std::cos (a) * rad * 0.28f, c.x + std::sin (a) * (rad - 4.5f), c.y - std::cos (a) * (rad - 4.5f), 1.5f);
+    const bool showValue = (over || dragging) && format;
+    drawLabel (g, showValue ? format (v) : caption.toUpperCase(), labelArea.expanded (8, 0), showValue ? col::text() : col::dim(), 9.5f);
+}
+void ValueKnob::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu()) return;
+    dragging = true; dragStart = get ? get() : 0.f;
+    if (onGestureStart) onGestureStart();
+}
+void ValueKnob::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! dragging || ! set) return;
+    const float range = e.mods.isShiftDown() ? 1600.f : 200.f;
+    set (snap (dragStart + (float) (-e.getDistanceFromDragStartY() + e.getDistanceFromDragStartX() / 3) / range));
+    sync(); showHelp();
+}
+void ValueKnob::mouseUp (const juce::MouseEvent&) { if (dragging) { dragging = false; if (onGestureEnd) onGestureEnd(); repaint(); } }
+void ValueKnob::mouseDoubleClick (const juce::MouseEvent&)
+{
+    if (! set) return;
+    if (onGestureStart) onGestureStart();
+    set (defaultValue);
+    if (onGestureEnd) onGestureEnd();
+    sync();
+}
+void ValueKnob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (! set || ! get) return;
+    if (onGestureStart) onGestureStart();
+    const float d = steps > 1 ? (w.deltaY > 0 ? 1.f : -1.f) / (float) (steps - 1) : w.deltaY * (e.mods.isShiftDown() ? 0.02f : 0.12f);
+    set (snap (get() + d));
+    if (onGestureEnd) onGestureEnd();
+    sync();
+}
+
 // ============================================================================ ParamGroup
 ParamWidget* ParamGroup::add (ParamRef r, const juce::String& captionOverride)
 {

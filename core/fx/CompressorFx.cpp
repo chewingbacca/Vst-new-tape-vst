@@ -103,7 +103,7 @@ public:
             if (env < 1.0e-6f) env = 0.f;
             makeup += makeupCoef * (makeupTarget - makeup);
             const float g = std::exp (0.1151292546f * (makeup - env));
-            l[i] *= g; r[i] *= g;
+            l[i] = safety (l[i] * g); r[i] = safety (r[i] * g);
         }
         hpf[0].sanitise(); hpf[1].sanitise();
         hpf[0].ic1 = undenorm (hpf[0].ic1); hpf[0].ic2 = undenorm (hpf[0].ic2);
@@ -116,6 +116,14 @@ public:
     float gainReductionDb() const { return meter.load (std::memory_order_relaxed); }
 
 private:
+    // make-up gain on a signal below the threshold can push it far over full scale: transparent
+    // below +-2, never above +-4
+    static inline float safety (float y)
+    {
+        const float m = std::fabs (y);
+        return m > 2.f ? std::copysign (2.f + 2.f * fastTanh (0.5f * (m - 2.f)), y) : y;
+    }
+
     float sr = 48000.f;
     Svf hpf[2];
     SlidingMax hold;

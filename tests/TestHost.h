@@ -1,6 +1,7 @@
 // A tiny offline "host" around the core engine for tests.
 #pragma once
 #include "engine/AudioEngine.h"
+#include "engine/OfflineRender.h"
 #include <vector>
 
 struct TestHost

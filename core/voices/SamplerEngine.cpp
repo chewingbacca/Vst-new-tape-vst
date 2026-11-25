@@ -103,10 +103,13 @@ public:
                 b1 = total * (double) (j + 1) / (double) ns;
             }
         }
-        const double rs = b0 + (double) clamp01 (e[Start]) * (b1 - b0);
-        const double remain = b1 - rs;
+        // Start and length snap to whole frames: a region is a definite set of frames, so the
+        // reversed region is exactly the forward one backwards (no float residue such as
+        // 0.4f * 15000 = 6000.0001 adding a stray frame at one end).
+        const double rs = std::floor (b0 + (double) clamp01 (e[Start]) * (b1 - b0) + 0.5);
+        const double remain = std::max (0.0, b1 - rs);
         const double minLen = std::min (remain, 0.002 * smp->sampleRate);      // length 0 still gives a 2 ms blip
-        len = std::max ((double) clamp01 (e[Length]) * remain, minLen);
+        len = std::floor (std::max ((double) clamp01 (e[Length]) * remain, minLen) + 0.5);
         if (len < 2.0) return;                                                // nothing to play
         regStart = rs; regEnd = rs + len;
 

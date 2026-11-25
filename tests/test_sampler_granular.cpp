@@ -613,7 +613,8 @@ TEST (sample_engines_are_block_size_independent)
                 Rig rig (type, 48000.0, smp.get());
                 rig.on (p, 64.3f, 99);
                 Out o; rig.render (o, p, 20000, block);
-                if (ref.l.empty()) { ref = o; CHECK (maxAbs (o.l) > 0.001); continue; }
+                // variant 3 (spread 1, seed 99) pans its single swelling grain hard right: check both channels
+                if (ref.l.empty()) { ref = o; CHECK (std::max (maxAbs (o.l), maxAbs (o.r)) > 0.001); continue; }
                 CHECK_MSG (maxDiff (ref, o) == 0.0, "engine %d variant %d block %d differs by %g", type, variant, block, maxDiff (ref, o));
             }
         }

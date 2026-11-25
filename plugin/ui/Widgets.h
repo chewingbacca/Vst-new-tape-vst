@@ -166,6 +166,36 @@ private:
     int last = -999;
 };
 
+// A rotary bound to arbitrary getters/setters (generator params, mod amounts, step fields).
+class ValueKnob : public juce::Component
+{
+public:
+    std::function<float()> get;                    // 0..1
+    std::function<void (float)> set;               // 0..1
+    std::function<juce::String (float)> format;
+    std::function<void()> onGestureStart, onGestureEnd;
+    juce::String caption, help;
+    juce::Colour colour = col::accent();
+    float defaultValue = 0.f;
+    bool bipolar = false;
+    int steps = 0;                                 // > 0: snap to this many positions
+    Ctx* ctx = nullptr;
+    void sync() { const float v = get ? get() : 0.f; if (v != last) { last = v; repaint(); } }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseEnter (const juce::MouseEvent&) override { over = true; showHelp(); repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { over = false; if (ctx) ctx->hoverHelp = {}; repaint(); }
+private:
+    void showHelp() { if (ctx) ctx->hoverHelp = caption + "  " + (format ? format (get ? get() : 0.f) : juce::String()) + "   " + help; }
+    float snap (float v) const { v = juce::jlimit (0.f, 1.f, v); return steps > 1 ? std::round (v * (float) (steps - 1)) / (float) (steps - 1) : v; }
+    float last = -1.f, dragStart = 0.f;
+    bool over = false, dragging = false;
+};
+
 // Section header + flow layout of parameter widgets.
 class ParamGroup : public juce::Component
 {

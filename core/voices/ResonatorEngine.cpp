@@ -444,6 +444,7 @@ private:
     // ------------------------------------------------------------------ control tick (fixed grid from note-on)
     void tick()
     {
+        flushState();
         const bool pchg = std::memcmp (pNorm, pMapped, sizeof (pNorm)) != 0;
         if (pchg) mapParams();
         if (penvLevel > 0.f)
@@ -530,7 +531,6 @@ private:
             outL[i] = softLimit (l); outR[i] = softLimit (r);
         }
         env = e;
-        for (int k = 0; k < n; ++k) { re[k] = undenorm (re[k]); im[k] = undenorm (im[k]); }
     }
 
     // ------------------------------------------------------------------ waveguide
@@ -597,6 +597,13 @@ private:
             outL[i] = softLimit (l); outR[i] = softLimit (r);
         }
         env = e;
+    }
+
+    // Denormal flushing happens on the control grid (not at the end of each host slice), so the
+    // output stays bit-identical for any slicing.
+    void flushState()
+    {
+        for (int k = 0; k < nProc; ++k) { re[k] = undenorm (re[k]); im[k] = undenorm (im[k]); }
         lpz = undenorm (lpz); intL = undenorm (intL); intR_ = undenorm (intR_); hpL = undenorm (hpL); hpR = undenorm (hpR);
         for (auto& s : ap) { s.x1 = undenorm (s.x1); s.y1 = undenorm (s.y1); }
     }

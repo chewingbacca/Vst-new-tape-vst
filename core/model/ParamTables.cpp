@@ -292,7 +292,7 @@ const ParamDesc kFxCompressor[kFxParams] = {
     { "ratio",  "Ratio",  1.f, 20.f, 4.f, PD::Exp, ":1", nullptr, 0, "Ratio" },
     { "attack", "Attack", 0.0001f, 0.2f, 0.005f, PD::Exp, "s", nullptr, 0, "Attack time" },
     { "release", "Release", 0.01f, 2.f, 0.12f, PD::Exp, "s", nullptr, 0, "Release time" },
-    { "makeup", "Makeup", 0.f, 24.f, 0.f, PD::Lin, "dB", nullptr, 0, "Make-up gain" },
+    { "makeup", "Makeup", 0.f, 24.f, 6.f, PD::Lin, "dB", nullptr, 0, "Make-up gain" },
     { "knee",   "Knee",   0.f, 24.f, 6.f, PD::Lin, "dB", nullptr, 0, "Knee width" },
     DISC ("source", "Key", kScSources, 0, "Sidechain source: this signal, another track, or the external input"),
     { "schpf",  "Key HPF", 20.f, 2000.f, 20.f, PD::Exp, "Hz", nullptr, 0, "High-pass on the sidechain" },

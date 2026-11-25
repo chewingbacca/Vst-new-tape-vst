@@ -8,10 +8,12 @@
 // Carriers: sine; triangle (2-point polyBLAMP corners); square (polyBLEP edges); sample & hold
 // (a new random level every carrier period, slewed over 0.15 ms). The right channel's carrier is
 // offset by up to half a cycle (`phase`). The output is trimmed by the carrier's RMS (at most +3 dB)
-// so the waves are about equally loud.
+// so the waves are about equally loud. A 5 Hz DC blocker follows (a low input partial close to the
+// carrier frequency produces a difference tone at or near 0 Hz).
 #include "Effect.h"
 #include "../model/ParamTables.h"
 #include "../dsp/Osc.h"
+#include "../dsp/Filters.h"
 #include "../util/Rng.h"
 
 namespace atm {
@@ -31,12 +33,14 @@ public:
         coef = onePoleCoef (0.004f, (float) sr);
         pitchCoef = 1.0 - std::exp (-(double) kCtl / (0.004 * sr));
         slew = std::max (2, (int) (sr * 0.00015));
+        for (auto& d : dc) d.prepare ((float) sr, 5.f);
         reset();
     }
 
     void reset() override
     {
         ph = 0.0; lfoPh = 0.0; env = 0.f; ctl = 0; inc = incStep = 0.0;
+        dc[0].reset(); dc[1].reset();
         for (int c = 0; c < 2; ++c)
         {
             shIdx[c] = 0; shCur[c] = shTarget[c] = hashToBipolar (hashN (0x5a17u, 0u));
@@ -94,8 +98,9 @@ public:
 
             const float cL = carrier (0, pL, dt), cR = carrier (1, pR, dt);
             const float k = (1.f - 0.5f * am) * trim, o = 0.5f * am * trim;
-            l[i] = inL * (cL * k + o);
-            r[i] = inR * (cR * k + o);
+            // low input content beating against the carrier lands at (or near) 0 Hz: keep it off the bus
+            l[i] = dc[0].process (inL * (cL * k + o));
+            r[i] = dc[1].process (inR * (cR * k + o));
         }
     }
 
@@ -149,6 +154,7 @@ private:
     uint32_t shIdx[2] = {};
     float  shCur[2] = {}, shTarget[2] = {}, shStep[2] = {}, lastPh[2] = {};
     int    shLeft[2] = {};
+    DcBlocker dc[2];
 };
 
 } // namespace

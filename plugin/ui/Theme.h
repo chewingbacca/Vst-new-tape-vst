@@ -51,6 +51,14 @@ inline void drawLabel (juce::Graphics& g, const juce::String& s, juce::Rectangle
     g.drawText (s, r, j, false);
 }
 
+// Multi-line text that wraps inside r.
+inline void drawWrapped (juce::Graphics& g, const juce::String& s, juce::Rectangle<int> r, juce::Colour c, float height = 9.f)
+{
+    g.setColour (c);
+    g.setFont (font (height));
+    g.drawFittedText (s, r, juce::Justification::topLeft, juce::jmax (1, (int) ((float) r.getHeight() / (height + 2.f))), 1.0f);
+}
+
 inline void fillPanel (juce::Graphics& g, juce::Rectangle<int> r, juce::Colour fill = col::panel(), float radius = 3.f)
 {
     g.setColour (fill);

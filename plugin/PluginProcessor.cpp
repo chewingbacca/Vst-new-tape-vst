@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "model/Json.h"
+#include "factory/FactorySamples.h"
 
 using namespace atm;
 
@@ -73,6 +74,8 @@ AutomataProcessor::AutomataProcessor() : AudioProcessor (makeBuses())
         add (new juce::AudioParameterBool (juce::ParameterID { "t" + n + "mute", 1 }, "Track " + n + " Mute", false), HostParam::Mute, t, 0);
     }
     midiIn.resize (1024); midiOut.resize (2048);
+    // build the factory sample library in the background so presets load instantly
+    loaderPool.addJob ([] { for (int i = 0; i < numFactorySamples(); ++i) getFactorySample (factorySampleInfo (i).name); });
     syncHostParamsFromProject();
     if (juce::MessageManager::getInstanceWithoutCreating() != nullptr) startTimerHz (30);
 }
